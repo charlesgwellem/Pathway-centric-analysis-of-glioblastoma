@@ -1,0 +1,28 @@
+{
+    "id": "5D9E5A3B",
+    "path": "D:/Data from damaged acer pc/Data Science Projects/Pathway-centric analysis of glioblastoma/script/GSE4290_exploratory_data_analysis.Rmd",
+    "project_path": "script/GSE4290_exploratory_data_analysis.Rmd",
+    "type": "r_markdown",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1730734762954.0,
+    "source_on_save": false,
+    "relative_order": 11,
+    "properties": {
+        "chunk_output_type": "console",
+        "source_window_id": "",
+        "Source": "Source",
+        "working_dir": "project",
+        "cursorPosition": "52,15",
+        "scrollLine": "0"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1729458045,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1729458045,
+    "read_only": false,
+    "read_only_alternatives": []
+}

@@ -1,0 +1,111 @@
+# gsva.es_temp_new <- gsvaPar_cell_markers.es
+
+# List of all cell types (excluding Cytotoxic T cells)
+cell_types <- colnames(gsvaPar_cell_markers.es)[1:54]  # Add your full list here
+cell_type_1 <- "Reg_T"  # Fixed cell type for convolution
+
+# Initialize a data frame to store the results for each cell type
+results <- data.frame(Cell_Type = character(), Peak_Pseudotime = numeric(), Peak_Broadness = numeric())
+
+# Define a helper function to compute the CDF for a numeric vector
+compute_cdf <- function(x) {
+  return(ecdf(x)(x))  # This calculates the empirical CDF and applies it to x
+}
+
+# Loop through each cell type and perform the convolution analysis
+for (cell_type_2 in cell_types) {
+  
+  # Sort data by pseudotime (log_pt)
+  gsva.es_temp_new <- gsva.es_temp_new[order(gsva.es_temp_new$log_pt), ]
+  
+  # Subset the data for non-tumor and tumor groups
+  non_tumor <- subset(gsva.es_temp_new, Group == "non-tumor")
+  non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+  
+  tumor <- subset(gsva.es_temp_new, Group == "glioblastoma, grade 4")
+  tumor <- tumor[order(tumor$log_pt), ]
+  
+  # Compute CDF for both Reg_T and the other cell type in tumor and non-tumor groups
+  tumor[[cell_type_1]] <- compute_cdf(tumor[[cell_type_1]])
+  tumor[[cell_type_2]] <- compute_cdf(tumor[[cell_type_2]])
+  
+  non_tumor[[cell_type_1]] <- compute_cdf(non_tumor[[cell_type_1]])
+  non_tumor[[cell_type_2]] <- compute_cdf(non_tumor[[cell_type_2]])
+  
+  # Perform convolution using the CDF-transformed data
+  conv_tumor <- convolve(tumor[[cell_type_1]], rev(tumor[[cell_type_2]]), type = "open")
+  conv_non_tumor <- convolve(non_tumor[[cell_type_1]], rev(non_tumor[[cell_type_2]]), type = "open")
+  
+  # Find peaks for tumor and non-tumor data
+  if (!all(is.na(conv_tumor)) && length(unique(conv_tumor)) > 1) {
+    peak_tumor <- which.max(conv_tumor)
+    tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+    
+    # Calculate peak broadness for tumor
+    peak_value <- conv_tumor[peak_tumor]
+    half_max <- peak_value / 2  # Half maximum
+    
+    # Find where convolution value is closest to half_max on both sides of the peak
+    left_index <- max(which(conv_tumor[1:peak_tumor] <= half_max), na.rm = TRUE)
+    right_index <- min(which(conv_tumor[peak_tumor:length(conv_tumor)] <= half_max), na.rm = TRUE) + peak_tumor - 1
+    tumor_peak_broadness <- right_index - left_index
+  } else {
+    tumor_peak_pseudotime <- NA
+    tumor_peak_broadness <- NA
+  }
+  
+  if (!all(is.na(conv_non_tumor)) && length(unique(conv_non_tumor)) > 1) {
+    peak_non_tumor <- which.max(conv_non_tumor)
+    non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+  } else {
+    non_tumor_peak_pseudotime <- NA
+  }
+  
+  # Append the results to the data frame
+  results <- rbind(results, data.frame(
+    Cell_Type = cell_type_2,
+    Peak_Pseudotime = tumor_peak_pseudotime,
+    Peak_Broadness = tumor_peak_broadness
+  ))
+  
+  # Pad conv_non_tumor with zeros to match the length of conv_tumor
+  conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+  
+  # Combine results into a data frame for plotting
+  comparison_data <- data.frame(
+    Index = 1:length(conv_tumor),
+    tumor = conv_tumor,
+    non_tumor = conv_non_tumor_padded
+  )
+  
+  # Create the base plot
+  p <- ggplot(comparison_data, aes(x = Index)) +
+    geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+    geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+    labs(
+      title = paste("Convolution Results (Using CDF):", cell_type_1, "vs", cell_type_2, "\nin Tumor vs Non-tumor"),
+      subtitle = paste(cell_type_1, "and", cell_type_2),
+      y = paste("Convolution Output (CDF-based Interaction between", cell_type_1, "\nand", cell_type_2, ")"), 
+      x = "Index"
+    ) +
+    scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+    theme_minimal()
+  
+  # Conditionally add text annotation for the tumor peak (if valid)
+  if (!is.na(tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_tumor, y = conv_tumor[peak_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2)), 
+                      color = "red", vjust = -1.5, size = 4)
+  }
+  
+  # Conditionally add text annotation for the non-tumor peak (if valid)
+  if (!is.na(non_tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2)), 
+                      color = "blue", vjust = -1.5, size = 4)
+  }
+  
+  # Print and save the plot for each cell type
+  print(p)
+  ggsave(filename = paste0("Convolution_CDF_", cell_type_1, "_vs_", cell_type_2, ".png"), plot = p)
+}

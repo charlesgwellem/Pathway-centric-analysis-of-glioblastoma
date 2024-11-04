@@ -1,0 +1,2588 @@
+---
+title: "GSE4290_exploratory_data_analysis"
+author: "Charles"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    theme: cosmo
+    highlight: monochrome
+    toc: yes
+    toc_float: no
+    toc_depth: 6
+    code_folding: hide
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+editor_options:
+  chunk_output_type: console
+---
+
+```{css, echo=FALSE}
+<style>
+body, divi, h2, h3, h4 {
+    font-family: "Bookman", serif;
+}
+
+body {
+    color: #333333;
+}
+a, a:hover {
+    color: red;
+}
+pre {
+    font-size: 10px;
+}
+</style>
+```
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(affy)
+library(limma)
+library(annotate)
+library(hgu133plus2.db)
+library(openxlsx)
+library(ggplot2)
+library(tidyverse)
+library(escape)
+library(GSVA)
+library(pheatmap)
+library(limma)
+library(robustbase)
+library(corrr)
+library(tidyverse)
+```
+
+```{r eval=FALSE}
+homedir <- getwd()
+setwd("raw_data/GSE4290_RAW/")
+
+# Load the raw data (assuming .CEL files are in your working directory)
+raw_data <- ReadAffy()
+
+setwd(homedir)
+
+# boxplot(exprs(raw_data))
+
+# Preprocess the raw data with RMA
+norm_data <- rma(raw_data)
+
+# View the first few rows of the expression matrix
+exprs_data <- exprs(norm_data)
+head(exprs_data)
+
+# Check the dimensions of the dataset
+dim(exprs_data)
+
+# Get probe annotations (Gene symbols for Affymetrix IDs)
+gene_symbols <- getSYMBOL(rownames(exprs_data), "hgu133plus2.db") # hgu133plus2.db
+
+# Add gene symbols as a new column to your data
+exprs_data_with_genes <- data.frame(GeneSymbol = gene_symbols, exprs_data)
+
+# Remove rows with NA gene symbols
+exprs_data_with_genes <- exprs_data_with_genes[!is.na(exprs_data_with_genes$GeneSymbol), ]
+
+exprs_data_with_genes <- exprs_data_with_genes[!duplicated(exprs_data_with_genes$GeneSymbol), ]
+
+rownames(exprs_data_with_genes) <- exprs_data_with_genes$GeneSymbol
+
+exprs_data_with_genes$GeneSymbol <- NULL
+
+colnames(exprs_data_with_genes) <- sub("\\..*$",
+                                       "", colnames(exprs_data_with_genes))
+```
+
+```{r eval=FALSE}
+# Load the GEOquery library
+library(GEOquery)
+
+# Download the GEO dataset
+gse <- getGEO("GSE4290", GSEMatrix = TRUE)
+
+# If the dataset has multiple platforms (GPL), choose the first
+gse <- gse[[1]]
+
+# Access the metadata (phenoData or pData) 
+metadata <- pData(gse)
+
+# View the first few rows of metadata
+head(metadata)
+
+write.xlsx(metadata,
+           "raw_data/metadata.xlsx",
+           rowNames = T)
+```
+
+**Exclude irrelevant columns**
+
+```{r}
+exprs_data_with_genes <- read.xlsx("raw_data/GSE4290_exprs_data_with_genes.xlsx",
+           rowNames = T)
+
+metadata <- read.xlsx("raw_data/metadata.xlsx", rowNames = T)
+
+names(metadata)[names(metadata)=="Histopathological.diagnostic:ch1"] <- "Group"
+
+# write.xlsx(phenoData(norm_data),
+#           "raw_data/metadata.xlsx",
+#           rowNames = T)
+
+# Boxplot for normalized data
+boxplot(exprs_data_with_genes, main = "Boxplot of Normalized Data")
+
+# Density plot to inspect the distribution
+plotDensity(exprs_data_with_genes, main = "Density Plot of Normalized Data")
+```
+
+
+```{r fig.align='center'}
+# Assuming 'data' is your data frame
+
+# Exclude columns where all values are unique
+metadata_filtered <- metadata[, sapply(metadata, 
+                                       function(x) length(unique(x)) != nrow(metadata))]
+
+# View the filtered dataset
+# View(metadata_filtered)
+
+metadata_filtered$ID <- rownames(metadata_filtered)
+
+metadata_filtered_use <- metadata_filtered[, c("ID", "description", 
+                                               "Group")]
+dim(metadata_filtered_use)
+
+exprs_data_with_genes <- as.data.frame(t(exprs_data_with_genes))
+
+exprs_data_with_genes <- merge(exprs_data_with_genes,
+                               metadata_filtered_use,
+                               by.x = "row.names",
+                               by.y = "ID")
+
+rownames(exprs_data_with_genes) <- exprs_data_with_genes$Row.names
+
+exprs_data_with_genes <- dplyr::filter(exprs_data_with_genes,
+                         Group %in%
+                      c("non-tumor", "glioblastoma, grade 4"))
+
+dim(exprs_data_with_genes)
+
+meta <- exprs_data_with_genes[, c("Row.names", "description", "Group")]
+  
+exprs_data_with_genes$Row.names <- NULL
+exprs_data_with_genes$Group <- NULL
+exprs_data_with_genes$description <- NULL
+
+group <- meta$Group
+group[group!="non-tumor"] <- "glioblastoma, grade 4"
+
+group <- factor(group,
+                levels = c("non-tumor",  "glioblastoma, grade 4"))
+
+exprs_data_with_genes$Group <- NULL
+
+pca <- prcomp(exprs_data_with_genes,
+              center = T, scale. = T)
+
+## make a scree plot
+pca.var <- pca$sdev^2
+pca.var.per <- round(pca.var/sum(pca.var)*100, 1)
+pca.var.per
+
+barplot(pca.var.per, 
+        main="Scree Plot", 
+        xlab="Principal Component", 
+        ylab="Percent Variation")
+
+pcs <- data.frame(PC1 = pca$x[, 1],
+                  PC2 = pca$x[, 2],
+                  Group = group)
+
+plot <- ggplot(pcs,
+               aes(x = PC1, y = PC2,
+                   color = Group)) +
+                geom_point(size = 3) +
+                ggtitle("Gene-based PCA plot of Healthy\nVs Tumour Samples") +
+                theme_bw() +
+                xlab(paste0("PC1: ", pca.var.per[1], "%")) +
+                ylab(paste0("PC2: ", pca.var.per[2], "%")) +
+                theme_minimal() +
+                scale_color_manual(values = c("blue",  "red")) +
+                theme(aspect.ratio = 1)
+
+plot
+
+ggsave("figures/Gene_based_PCA_between_conditions.png",
+       plot = plot, dpi = 300)
+```
+
+## Differential gene expression analysis
+
+```{r}
+group <- as.character(group)
+group[grep("non-tumor", group)] <- "normal"
+group[grep("glioblastoma", group)] <- "grade4_glioblastoma"
+
+groups <- factor(group)
+Groups_df <- data.frame(Groups = groups)
+
+model_mat <- model.matrix(~ 0 + groups)
+colnames(model_mat) <- levels(groups)
+
+fit <- lmFit(t(exprs_data_with_genes),
+              model_mat)
+
+contrast_matrix <- makeContrasts(tumour_vs_normal = grade4_glioblastoma  - normal,
+                                 levels = model_mat)
+
+fit2 <- contrasts.fit(fit,
+                      contrast_matrix)
+
+fit2 <- eBayes(fit2)
+
+top_table <- topTable(fit2, adjust.method = "fdr", number = Inf)
+top_table$Gene <- rownames(top_table)
+
+top_table %>%
+  head(10) %>%
+  knitr::kable(caption = "DGEs: Gliobastoma Stage 4 vs Non-tumor Samples",
+               "pipe")
+
+# dim(top_table[top_table$adj.P.Val < 0.05, ])
+```
+
+**Visualisation**
+
+```{r fig.align='center'}
+# Create an annotation dataframe for the metadata
+annotation_col <- data.frame(
+    Group = factor(meta$Group),  # 'metadata$Group' contains grouping information like tumor type
+    row.names = meta$Row.names  # Ensure row names match your dataset
+)
+
+up_sig <- top_table[top_table$adj.P.Val < 0.05 & top_table$logFC > 0, ]
+
+# Create a heatmap with the top differentially expressed genes
+top_genes <- rownames(up_sig)[1:50]  # Select top 50 genes
+heatmap_data <- t(exprs_data_with_genes)[top_genes, ]
+
+annot_colors=list(Group=c(`glioblastoma, grade` ="red",
+                          `non-tumor`="blue"))
+
+# Define the annotation and colors for the groups
+ann_colors <- list(
+  Group = c("non-tumor" = "blue", 
+            "glioblastoma, grade 4" = "red")
+)
+
+annotation_col$Group <- factor(annotation_col$Group,
+                               levels = c("non-tumor", "glioblastoma, grade 4"))
+
+pheatmap(heatmap_data, 
+         annotation_col = annotation_col, 
+         annotation_colors = ann_colors,
+         main = "DGEs: Gliobastoma Stage 4 vs Non-tumor Samples",
+         scale = "row", 
+         cluster_rows = TRUE, cluster_cols = TRUE)
+```
+
+
+```{r fig.align='center'}
+GS.hallmark <- getGeneSets(library = "H")
+
+all(rownames(exprs_data_with_genes)==
+    meta$Row.names) # T
+
+gsvaPar <- ssgseaParam(t(exprs_data_with_genes), GS.hallmark)
+
+gsva.es <- gsva(gsvaPar, verbose=FALSE)
+dim(gsva.es)
+
+group <- as.character(group)
+group[grep("non-tumor", group)] <- "normal"
+group[grep("glioblastoma", group)] <- "grade4_glioblastoma"
+
+groups <- factor(group)
+Groups_df <- data.frame(Groups = groups)
+
+model_mat <- model.matrix(~ 0 + groups)
+colnames(model_mat) <- levels(groups)
+
+fit <- lmFit(gsva.es,
+              model_mat)
+
+contrast_matrix <- makeContrasts(tumour_vs_normal = grade4_glioblastoma  - normal,
+                                 levels = model_mat)
+
+fit2 <- contrasts.fit(fit,
+                      contrast_matrix)
+
+fit2 <- eBayes(fit2)
+
+top_table <- topTable(fit2, adjust.method = "fdr", number = Inf)
+
+top_table_up_sig <- top_table[top_table$adj.P.Val < 0.05, ]
+dim(top_table_up_sig)
+
+top_table_up_sig %>%
+  head(10) %>%
+  knitr::kable(caption = "Differentialy affected pathways in tumors vs non-tumor samples",
+               "pipe")
+
+gsva.es_temp <- gsva.es
+gsva.es_temp <- as.data.frame(t(gsva.es_temp))
+
+pheatmap(gsva.es[rownames(top_table_up_sig), ], 
+         annotation_col = annotation_col, 
+         clustering_distance_cols = "minkowski",
+         annotation_colors = ann_colors,
+         scale = "row", 
+         cluster_rows = TRUE, cluster_cols = T)
+```
+
+
+```{r fig.align='center'}
+# iris.umap_learn <- umap::umap(t(gsva.es), method="umap-learn")
+pca <- prcomp(t(gsva.es))
+
+## make a scree plot
+pca.var <- pca$sdev^2
+pca.var.per <- round(pca.var/sum(pca.var)*100, 1)
+pca.var.per
+
+barplot(pca.var.per, 
+        main="Scree Plot", 
+        xlab="Principal Component", 
+        ylab="Percent Variation")
+
+group <- meta$Group
+group[group!="non-tumor"] <- "glioblastoma, grade 4"
+
+group <- factor(group,
+                levels = c("non-tumor",  "glioblastoma, grade 4"))
+
+pcs <- data.frame(PC1 = pca$x[, 1],
+                  PC2 = pca$x[, 2],
+                  Group = group)
+
+plot <- ggplot(pcs,
+               aes(x = PC1, y = PC2,
+                   color = Group)) +
+                geom_point(size = 3) +
+                ggtitle("Pathway-based PCA plot of Healthy\nVs Tumour Samples") +
+                theme_bw() +
+                xlab(paste0("PC1: ", pca.var.per[1], "%")) +
+                ylab(paste0("PC2: ", pca.var.per[2], "%")) +
+                scale_color_manual(values = c("blue",  "red")) +
+                theme_minimal() +
+                theme(aspect.ratio = 1)
+
+plot
+```
+
+**PC1**
+
+```{r fig.align='center'}
+# Create the dot plot
+data <- pca$rotation[, 1]
+data <- data.frame(Pathway = names(data),
+                   Loading = as.numeric(data))
+
+data <- data[order(abs(data$Loading), decreasing = T), ][1:25, ]
+
+ggplot(data, aes(x =  Loading, y = reorder(Pathway,  Loading))) +
+  geom_point(size = 3, color = "red", alpha = 0.7) +
+  labs(title = "PCA Plot\nLoading scores of PC1",
+       x = "Loading scores",
+       y = "Pathway") +
+  theme_minimal()
+```
+
+**Pseudotime**
+
+```{r}
+best_features <- abs(pca$rotation[, 1])
+best_features <- sort(best_features, decreasing = T)
+best_features <- names(best_features[1:22])
+
+all(rownames(gsva.es_temp) == meta$Row.names)
+gsva.es_temp$Group <- meta$Group
+
+healthy_data <- subset(gsva.es_temp[, c(best_features[1:10], "Group")],
+                            Group == "non-tumor")
+healthy_data$Group <- NULL
+
+robust_cov <- covMcd(healthy_data)
+
+robust_mean <- robust_cov$center
+robust_cov_matrix <- robust_cov$cov
+
+mahalanobis_distances <- apply(gsva.es_temp[, best_features[1:10]], 
+                               1, function(row) {
+                                 mahalanobis(row, 
+                                             robust_mean, 
+                                             robust_cov_matrix)
+                               })
+
+gsva.es_temp$pt <- mahalanobis_distances
+
+gsva.es_temp$Group <- factor(gsva.es_temp$Group,
+                       levels = c("non-tumor",
+                                  "glioblastoma, grade 4"))
+
+ggplot(gsva.es_temp,
+       aes(x = log(pt),
+           group = Group,
+           # color = Group,
+           fill = Group)) +
+  geom_density(alpha = 0.6,  color = NA) +
+  ggtitle("Pathway progression towards grade 4 glioblastoma") +
+  xlab("log(Pseudotime)") +
+  scale_fill_manual(values = c("blue", "red"))+
+  theme_bw() +
+  theme_minimal()
+```
+
+```{r}
+best_features[1:10]
+
+gsva.es_temp$Group <- factor(gsva.es_temp$Group,
+                             levels = c("non-tumor", "glioblastoma, grade 4"))
+
+ggplot(gsva.es_temp, aes(x = log(pt), y = HALLMARK_KRAS_SIGNALING_UP)) +
+  geom_point(size = 1, alpha = 0.7, aes(color = Group)) +
+  geom_smooth(method = "loess", se = F, color = "black") +
+  labs(title = "Pseudotime vs HALLMARK_KRAS_SIGNALING_UP\nwith LOESS (Outliers Included)", 
+       x = "Pseudotime (Distance from Root Centroid)", 
+       y = "HALLMARK_KRAS_SIGNALING_UP",
+       color = "Diabetic Status") +
+  scale_color_manual(values = c("blue",  "red"), 
+                     labels = c("non-tumor", "glioblastoma, grade 4")) +
+  theme_minimal()
+```
+
+```{r fig.align='center'}
+# Create two matrices for pathway scores of the two groups
+non_tumor_matrix <- gsva.es_temp[gsva.es_temp$Group == "non-tumor", best_features]
+tumor_matrix <- gsva.es_temp[gsva.es_temp$Group == "glioblastoma, grade 4", best_features]
+
+# Compute dot products for each pathway
+dot_products <- sapply(best_features, function(pathway) {
+  non_tumor_vec <- non_tumor_matrix[, pathway]
+  tumor_vec <- tumor_matrix[, pathway]
+  
+  # Ensure vectors have the same length
+  dot_product <- sum(non_tumor_vec * tumor_vec)
+  
+  return(dot_product)
+})
+
+# Print dot products for each pathway
+dot_products
+
+# Convert dot products to a dataframe for plotting
+dot_product_df <- data.frame(
+  Pathway = names(dot_products),
+  DotProduct = dot_products
+)
+
+# Create the bar plot
+ggplot(dot_product_df, aes(x = reorder(Pathway, DotProduct), y = DotProduct)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Dot Products between\nNon-tumor and Stage 4 Glioblastoma",
+       x = "Pathway",
+       y = "Dot Product") +
+  theme_minimal()
+```
+
+```{r}
+library(viridis)
+
+oi <- c(best_features[1:10], "HALLMARK_KRAS_SIGNALING_UP",
+        "HALLMARK_KRAS_SIGNALING_DN")
+
+d <- gather(gsva.es_temp,
+            key = "pathway",
+            value = "score",
+            oi)
+
+# Calculate midpoint for labeling
+label_positions <- d %>%
+  group_by(pathway) %>%
+  summarise(log_pt = median(log(pt)), 
+            score = score[which.min(abs(log(pt) - median(log(pt))))])
+
+# Define color palette for pathways and points
+pathway_colors <- c("HALLMARK_ANGIOGENESIS" = "green", 
+                    "HALLMARK_APOPTOSIS" = "orange", 
+                    "HALLMARK_E2F_TARGETS" = "purple", 
+                    "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION" = "brown",
+                    "HALLMARK_G2M_CHECKPOINT" = "darkblue", 
+                    "HALLMARK_HYPOXIA" = "pink", 
+                    "HALLMARK_IL6_JAK_STAT3_SIGNALING" = "yellow", 
+                    "HALLMARK_INTERFERON_ALPHA_RESPONSE" = "darkgreen",
+                    "HALLMARK_INTERFERON_GAMMA_RESPONSE" = "darkred", 
+                    "HALLMARK_TNFA_SIGNALING_VIA_NFKB" = "cyan",
+                    "HALLMARK_KRAS_SIGNALING_DN" = "black")
+
+group_colors <- c("non-tumor" = "blue", "glioblastoma, grade 4" = "red")
+
+ggplot(d, aes(x = log(pt), y = score, group = pathway)) +
+  geom_smooth(aes(color = pathway), method = "loess", se = FALSE, size = 1) +
+  geom_point(aes(color = Group), size = 0.01) +
+  scale_color_manual(values = c(pathway_colors, group_colors)) +
+  # geom_text(data = label_positions, aes(x = log_pt, y = score, label = pathway), 
+  #          hjust = -0.2, size = 3, check_overlap = TRUE) + # Adjust hjust as needed
+  theme_minimal() +
+  guides(color = guide_legend(override.aes = list(size = 4))) +  # Increase legend dot size
+  labs(title = "Pseudotime vs Multiple Pathways",
+       x = "log(Pseudotime)",
+       y = "Pathway Activity",
+       color = "Group/Pathway") +
+  theme(legend.position = "right")
+
+d$pathway <- gsub("HALLMARK_", "", d$pathway)
+
+ggplot(d, aes(x = log(pt), y = score, color = Group)) +
+  geom_point(size = 2) +
+  geom_smooth(method = "loess", se = FALSE, color = "black") +
+  facet_wrap(~pathway, scales = "free_y") +
+  theme_minimal() +
+  guides(color = guide_legend(override.aes = list(size = 4))) +  # Increase legend dot size
+  labs(title = "Pathway Activity Over Pseudotime", 
+       x = "log(Pseudotime)", 
+       y = "Pathway Activity") +
+  scale_color_manual(values = c("blue", "red"))
+```
+
+```{r fig.align='center', fig.height=14, fig.width=14}
+gsva.es_temp$log_pt <- log(gsva.es_temp$pt)
+library(corrr)
+
+gsva.es_temp %>%
+  correlate(method = "spearman") %>%
+  shave() %>%
+  rplot(print_cor = T) +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+```
+
+## Cell marker analysis
+
+### CellMarker DB
+
+```{r fig.align='center'}
+library(readxl)
+library(GSVA)
+
+markers <- read_xlsx("data/media-1.xlsx",
+                     sheet = "best_cell_markers")
+
+head(markers)
+
+markers_sub <- dplyr::filter(markers,# Brain
+                  p_val_adj < 0.05)
+
+markers_sub$gene <- toupper(markers_sub$gene)
+
+celltype <- unique(markers_sub$cluster)
+
+cell_markers <- list()
+
+for (cell in celltype) {
+  # m_df <- read_excel(paste0("data/", m))
+  cluster <- markers_sub[markers_sub$cluster == cell, ]$cluster
+  cluster <- unique(gsub(" ", "_", cluster))
+  cluster <- unique(gsub("-", "_", cluster))
+  cluster <- unique(gsub("\\/", "_", cluster))
+  cell_markers_list <-  markers_sub[markers_sub$cluster == cell, ]$gene
+  cell_markers[[cluster]] <- na.omit(cell_markers_list)
+}
+
+filtered_list <- Filter(function(x) length(x) >= 5, cell_markers)
+
+gsvaPar_cell_markers <- ssgseaParam(t(exprs_data_with_genes), filtered_list)
+
+gsvaPar_cell_markers.es <- gsva(gsvaPar_cell_markers, verbose=FALSE)
+dim(gsvaPar_cell_markers.es)
+
+gsvaPar_cell_markers.es <- as.data.frame(t(gsvaPar_cell_markers.es))
+
+all(rownames(gsvaPar_cell_markers.es) == meta$Row.names)
+groups <- factor(meta$Group)
+Groups_df <- data.frame(Groups = groups)
+
+pheatmap(t(gsvaPar_cell_markers.es), 
+         annotation_col = annotation_col, 
+         annotation_colors = ann_colors,
+         scale = "row", 
+         cluster_rows = TRUE, cluster_cols = TRUE)
+```
+
+```{r fig.align='center'}
+groups <- factor(group)
+Groups_df <- data.frame(Groups = groups)
+Groups_df$Groups <- as.character(Groups_df$Groups)
+Groups_df$Groups[Groups_df$Groups=="non-tumor"] <- "normal"
+Groups_df$Groups[Groups_df$Groups=="glioblastoma, grade 4"] <- "grade4_glioblastoma"
+groups <- Groups_df$Groups
+groups <- factor(groups,
+                 levels = c("normal", "grade4_glioblastoma"))
+
+model_mat <- model.matrix(~ 0 + groups)
+colnames(model_mat) <- levels(groups)
+
+fit <- lmFit(t(gsvaPar_cell_markers.es),
+              model_mat)
+
+contrast_matrix <- makeContrasts(tumour_vs_normal = grade4_glioblastoma  - normal,
+                                 levels = model_mat)
+
+fit2 <- contrasts.fit(fit,
+                      contrast_matrix)
+
+fit2 <- eBayes(fit2)
+
+top_table <- topTable(fit2, adjust.method = "fdr", number = Inf)
+
+top_table_up_sig_cell_markers <- top_table[top_table$adj.P.Val < 0.05, ]
+dim(top_table_up_sig_cell_markers)
+
+top_table_up_sig_cell_markers %>%
+  head(10) %>%
+  knitr::kable(caption="Top 10 differential enrichment of cell signatures",
+               "pipe")
+
+pheatmap(t(gsvaPar_cell_markers.es[, rownames(top_table_up_sig_cell_markers)]), 
+         annotation_col = annotation_col, 
+         annotation_colors = ann_colors,
+         scale = "row", 
+         main = "Cell signatures",
+         cluster_rows = TRUE, cluster_cols = TRUE)
+```
+
+**PCA**
+
+```{r}
+# iris.umap_learn <- umap::umap(t(gsva.es), method="umap-learn")
+pca <- prcomp(gsvaPar_cell_markers.es)
+
+## make a scree plot
+pca.var <- pca$sdev^2
+pca.var.per <- round(pca.var/sum(pca.var)*100, 1)
+pca.var.per
+
+barplot(pca.var.per, 
+        main="Scree Plot", 
+        xlab="Principal Component", 
+        ylab="Percent Variation")
+
+pcs <- data.frame(PC1 = pca$x[, 1],
+                  PC2 = pca$x[, 2],
+                  Group = group)
+
+pcs$Group <- factor(pcs$Group,
+                    levels = c("non-tumor", "glioblastoma, grade 4"))
+
+plot <- ggplot(pcs,
+               aes(x = PC1, y = PC2,
+                   color = Group)) +
+                geom_point(size = 3) +
+                ggtitle("Cell signature-based PCA plot of Healthy\nVs Tumour Samples") +
+                theme_bw() +
+                xlab(paste0("PC1: ", pca.var.per[1], "%")) +
+                ylab(paste0("PC2: ", pca.var.per[2], "%")) +
+                theme_minimal() +
+                scale_color_manual(values = c( "blue", "red")) +
+                theme(aspect.ratio = 1)
+
+plot
+```
+
+**Pseudotime calculation**
+
+```{r}
+library(robustbase)
+
+best_features <- abs(pca$rotation[, 1])
+best_features <- sort(best_features, decreasing = T)
+best_features <- names(best_features)[1:10]
+
+all(rownames(gsvaPar_cell_markers.es) == meta$Row.names) # T
+gsvaPar_cell_markers.es$Group <- meta$Group
+
+healthy_data <- subset(gsvaPar_cell_markers.es[, c(best_features, "Group")],
+                            Group == "non-tumor")
+healthy_data$Group <- NULL
+
+robust_cov <- covMcd(healthy_data)
+
+robust_mean <- robust_cov$center
+robust_cov_matrix <- robust_cov$cov
+
+
+mahalanobis_distances <- apply(gsvaPar_cell_markers.es[, best_features], 
+                               1, function(row) {
+                                 mahalanobis(row, 
+                                             robust_mean, 
+                                             robust_cov_matrix)
+                               })
+
+gsvaPar_cell_markers.es$pt <- mahalanobis_distances
+```
+
+
+```{r fig.align='center', fig.width=14, fig.height=14}
+ggplot(gsvaPar_cell_markers.es,
+       aes(x = log(pt),
+           group = Group,
+           color = Group,
+           fill = Group)) +
+  geom_density(alpha = 0.6, color=NA) +
+  ggtitle("Pathway progression to Glioblastoma using Cell signatures") +
+  scale_fill_manual(values = c( "blue", "red")) +
+  xlab("log Pseudotime") +
+  theme_bw() +
+  theme_minimal()
+
+ggplot(gsvaPar_cell_markers.es, aes(x = log(pt), y = Reg_T)) +
+  geom_point(size = 1, alpha = 0.7, aes(color = Group)) +
+  geom_smooth(method = "loess", se = F, color = "black") +
+  labs(title = "Pseudotime vs Reg_T  with LOESS (Outliers Included)", 
+       x = "Pseudotime (Distance from Root Centroid)", 
+       y = "Reg_T",
+       color = "Diabetic Status") +
+  scale_color_manual(values = c( "red", "blue"), 
+                     labels = c("Stage4 Glioblastoma", "non-tumour")) +
+  theme_minimal()
+
+# Define the cell types you're interested in
+cell_types <- names(pca$rotation[, 1])  # Add more cell types as needed
+cell_types <- gsub("\\(.*?\\)", "", cell_types) 
+cell_types <- gsub("\\+", "", cell_types)
+cell_types <- gsub("\\-", "", cell_types)
+cell_types <- gsub("\\/", "", cell_types)
+
+colnames(gsvaPar_cell_markers.es) <- gsub("\\(.*?\\)", 
+                                         "", colnames(gsvaPar_cell_markers.es))
+
+colnames(gsvaPar_cell_markers.es) <- gsub("\\+", 
+                                         "", colnames(gsvaPar_cell_markers.es))
+colnames(gsvaPar_cell_markers.es) <- gsub("\\-", 
+                                         "", colnames(gsvaPar_cell_markers.es))
+colnames(gsvaPar_cell_markers.es) <- gsub("\\/", 
+                                         "", colnames(gsvaPar_cell_markers.es))
+
+# Loop through each cell type and generate the corresponding plot
+for (cell_type in cell_types) {
+  # Generate the plot for the current cell type
+  p <- ggplot(gsvaPar_cell_markers.es, aes_string(x = "log(pt)", 
+                                      y = cell_type)) +
+    geom_point(size = 1, alpha = 0.7, aes(color = Group)) +
+    geom_smooth(method = "loess", se = FALSE, color = "black") +
+    labs(title = paste("Pseudotime vs", cell_type, "with LOESS (Outliers Included)"), 
+         x = "Pseudotime (Distance from Root Centroid)", 
+         y = cell_type,
+         color = "Diabetic Status") +
+    scale_color_manual(values = c("blue", "red"), 
+                       labels = c("non-tumor", "glioblastoma, grade 4")) +
+    theme_minimal()
+
+  # Print the plot
+  print(p)
+}
+
+gsvaPar_cell_markers.es$log_pt <- log(gsvaPar_cell_markers.es$pt)
+
+gsvaPar_cell_markers.es %>%
+  correlate(method = "spearman") %>%
+  shave() %>%
+  rplot(print_cor = T) +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+```
+
+**Cell-type decomposition**
+
+```{r}
+# Load ggpubr package
+library(ggpubr)
+
+cell_abundance <- meta[, c("Row.names", "Group")]
+
+corrected_bulk <- exprs_data_with_genes
+
+# Scale the corrected bulk data
+bulk_scaled <- t(corrected_bulk)
+
+# Pathway list (replace with your filtered list of pathways)
+pways <- names(filtered_list)
+pways <- gsub("\\(.*?\\)", "", pways) 
+pways <- gsub("\\+", "", pways)
+pways <- gsub("\\-", "", pways)
+pways <- gsub("\\/", "", pways)
+names(filtered_list) <- pways
+
+for (pway in pways) {
+  
+  marker_genes <- filtered_list[[pway]]  # Extract marker genes for the pathway
+  
+  gsva_score <- gsvaPar_cell_markers.es[, pway]  # GSVA score for the pathway
+  
+  # Subset the bulk expression data to include only marker genes
+  bulk_markers <- bulk_scaled[rownames(bulk_scaled) %in% marker_genes, ]
+  
+  # Calculate the variance of each marker gene across samples
+  gene_variances <- apply(bulk_markers, 1, var)
+  gene_variances <- sort(gene_variances, decreasing = TRUE)
+  
+  # Use all high variance genes (or subset if needed)
+  high_variance_genes <- names(gene_variances)
+  
+  # Subset bulk data using high-variance marker genes
+  bulk_high_variance <- bulk_markers[high_variance_genes, ]
+  
+  # Create a diagonal weight matrix using the variances of the high-variance marker genes
+  W <- diag(gene_variances[high_variance_genes])
+  
+  # Multiply the bulk expression matrix by the variances (element-wise multiplication)
+  XW <- t(t(bulk_high_variance) * gene_variances[high_variance_genes])
+  
+  # Perform PCA on the weighted expression matrix
+  pca_result <- prcomp(t(XW), center = TRUE, scale. = FALSE)
+  
+  # Create a data frame for PCA results
+  x_df <- as.data.frame(pca_result$x)
+  
+  # Identify the component most correlated with the GSVA score
+  ind <- which.max(sapply(x_df, function(x) cor(x, gsva_score, method = "spearman")))
+  
+  # Extract the most correlated principal component
+  first_PC <- pca_result$x[, ind]
+  
+  # Normalize PC1 values to [0, 1] to interpret as proportions
+  normalized_proportion <- (first_PC - min(first_PC)) / (max(first_PC) - min(first_PC))
+  
+  # Plot the barplot for the estimated proportions
+  # barplot(normalized_proportion, main = paste0("Estimated Proportion of ", pway), 
+  #        col = rainbow(length(normalized_proportion)), xlab = "Samples", ylab =    # 
+  #"Proportion")
+  
+  # Add normalized proportions to the cell_abundance data for the current pathway
+  cell_abundance[, pway] <- as.numeric(normalized_proportion)
+  
+  # Ensure consistent group levels
+  
+  names(cell_abundance)[names(cell_abundance) == "Group"] <- "Group"
+  
+  cell_abundance$Group <- factor(cell_abundance$Group,
+                              levels = c("non-tumor", "glioblastoma, grade 4"))
+  
+  # Plot boxplot for the pathway across the groups
+  p <- ggplot(cell_abundance,
+              aes(x = Group,
+                  fill = Group,
+                  y = .data[[pway]])) +  # Use .data[[pway]] to reference column dynamically
+    ggtitle(pway) +
+    geom_boxplot(outlier.shape = NA) +
+    theme_bw() +
+    theme_minimal() +
+    scale_fill_manual(values = c("blue", "red"))+
+    xlab("Group") +
+    ylab(paste0(pway, " abundance")) +
+    stat_compare_means(method = "wilcox.test", 
+                       label = "p.signif", 
+                       comparisons = list(c("non-tumor", 
+                                            "glioblastoma, grade 4"))) +
+    theme(aspect.ratio = 1)
+  
+  print(p)
+}
+
+all(colnames(cell_abundance$Row.names) == rownames(gsva.es_temp))
+
+cell_abundance$log_pt <- log(gsva.es_temp$pt)
+
+cell_abundance %>%
+  correlate(method = "spearman") %>%
+  shave() %>%
+  rplot(print_cor = T) +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+
+gsvaPar_cell_markers.es$Group <- factor(gsvaPar_cell_markers.es$Group,
+                                        levels = c("non-tumor", 
+                                                   "glioblastoma, grade 4"))
+
+ggplot(gsvaPar_cell_markers.es,
+       aes(x = log(pt),
+           group = Group,
+           #color = Group,
+           fill = Group)) +
+  geom_density(alpha = 0.6, color = NA) +
+  ggtitle("Pathway progression to Glioblastoma using Cell signatures") +
+  xlab("log Pseudotime") +
+  theme_bw() +
+  scale_fill_manual(values = c("blue", "red"))+
+  theme_minimal()
+
+# cell_abundance <- cell_abundance[order(cell_abundance$log_pt), ]
+
+best_cells <- abs(pca$rotation[, 1])
+best_cells <- sort(best_cells, decreasing = T)
+best_cells <- names(best_cells)
+best_cells <- gsub("\\(.*?\\)", "", best_cells) 
+best_cells <- gsub("\\+", "", best_cells)
+best_cells <- gsub("\\-", "", best_cells)
+best_cells <- gsub("\\/", "", best_cells)
+
+pheatmap(t(cell_abundance[, best_cells[1:30]]),
+         annotation_col = annotation_col, 
+         main = "Cell abundance",
+         annotation_colors = ann_colors)
+```
+
+**Visualising cell abundance over time**
+
+```{r}
+groups <- factor(group)
+Groups_df <- data.frame(Groups = groups)
+Groups_df$Groups <- as.character(Groups_df$Groups)
+Groups_df$Groups[Groups_df$Groups=="non-tumor"] <- "normal"
+Groups_df$Groups[Groups_df$Groups=="glioblastoma, grade 4"] <- "grade4_glioblastoma"
+groups <- Groups_df$Groups
+groups <- factor(groups,
+                 levels = c("normal", "grade4_glioblastoma"))
+
+model_mat <- model.matrix(~ 0 + groups)
+colnames(model_mat) <- levels(groups)
+
+cell_abundance_use <- cell_abundance[, 3:56]
+
+fit <- lmFit(t(cell_abundance_use),
+              model_mat)
+
+contrast_matrix <- makeContrasts(tumour_vs_normal = grade4_glioblastoma  - normal,
+                                 levels = model_mat)
+
+fit2 <- contrasts.fit(fit,
+                      contrast_matrix)
+
+fit2 <- eBayes(fit2)
+
+top_table <- topTable(fit2, adjust.method = "fdr", number = Inf)
+
+top_table_up_sig_cell_abundance <- top_table[top_table$adj.P.Val < 0.01, ]
+dim(top_table_up_sig_cell_abundance)
+
+top_table_up_sig_cell_abundance %>%
+  head(10) %>%
+  knitr::kable(caption = "Changes in cell abundance in non-tumor vs tumor samples",
+               "pipe")
+
+cells_to_plot <- c(rownames(top_table_up_sig_cell_abundance))
+
+pheatmap(t(cell_abundance[,cells_to_plot]),
+         annotation_col = annotation_col, 
+         main = "Cell abundance",
+         annotation_colors = ann_colors)
+```
+
+```{r fig.align='center'}
+all(rownames(cell_abundance) == rownames(gsvaPar_cell_markers.es))
+gsvaPar_cell_markers.es$pt <- NULL
+cell_abundance$log_pt <- gsvaPar_cell_markers.es$log_pt
+
+for (sig in sort(best_cells)) {
+  
+  p <- ggplot(cell_abundance, aes(x = log_pt, y = .data[[sig]])) +
+    geom_point(aes(color = Group)) +
+    geom_smooth(method = "loess", se = F, color="black") +  # Optionally add a smoothed line
+    labs(title = paste0(sig, " Abundance Along Pseudotime"), 
+         x = "log(Pseudotime)", 
+         y = sig) +
+    scale_color_manual(values = c("blue", "red"))+
+    guides(color = guide_legend(override.aes = list(size = 4))) + 
+    theme_minimal()
+  print(p)
+}
+```
+
+**Visualise cell abundances over time for cells of interest**
+
+```{r fig.align='center', fig.height=10, fig.width=10}
+cells_oi <- c("Cancer_cell","Deep_layer_neuron",
+              "Effector_memory_CD4_T_cell", "Naive_CD8_T_cell",
+              "CD4_T_cell", "Monocyte", "Cytotoxic_T_cell","Tissueresident_macrophage",
+               "Astrocyte", "B_cell", "Lymphocyte", "Regulatory_T_cell", "T_cell")
+
+cells_df <- gather(cell_abundance,
+            key = "celltype",
+            value = "Abundance",
+            cells_oi)
+
+cells_df$Group <- factor(cells_df$Group,
+                         levels =  c("non-tumor", "glioblastoma, grade 4"))
+
+ggplot(cells_df, aes(x = log_pt, 
+                     y = Abundance, color = Group)) +
+  geom_point(size = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "black") +
+  facet_wrap(~celltype, scales = "free_y") +
+  theme_minimal() +
+  guides(color = guide_legend(override.aes = list(size = 4))) +  # Increase legend dot size
+  labs(title = "Cell  abundance over pseudotime", 
+       x = "log(Pseudotime)", 
+       y = "Cell abundance") +
+  scale_color_manual(values = c("blue", "red"))
+```
+
+**Visualise cell activities over time**
+
+```{r fig.align='center', fig.width=10, fig.height=10}
+cells_df <- gather(gsvaPar_cell_markers.es,
+            key = "celltype",
+            value = "Activity",
+            cells_oi)
+
+cells_df$Group <- factor(cells_df$Group,
+                         levels =  c("non-tumor", "glioblastoma, grade 4"))
+
+ggplot(cells_df, aes(x = log_pt, y = Activity, color = Group)) +
+  geom_point(size = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "black") +
+  facet_wrap(~celltype, scales = "free_y") +
+  theme_minimal() +
+  guides(color = guide_legend(override.aes = list(size = 4))) +  # Increase legend dot size
+  labs(title = "Cell  activity over pseudotime", 
+       x = "log(Pseudotime)", 
+       y = "Cell activity") +
+  scale_color_manual(values = c("blue", "red"))
+```
+
+```{r fig.align='center'}
+# Define your cell types of interest here
+cell_type_1 <- "Cytotoxic_T_cell"  # Example: Cytotoxic T cells
+cell_type_2 <- "Fibroblast"        # Example: Fibroblasts
+
+# Sort data by pseudotime (log_pt)
+gsvaPar_cell_markers.es <- gsvaPar_cell_markers.es[order(gsvaPar_cell_markers.es$log_pt), ]
+
+# Subset the data for non-tumor and tumor groups
+non_tumor <- subset(gsvaPar_cell_markers.es, Group == "non-tumor")
+non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+
+tumor <- subset(gsvaPar_cell_markers.es, Group == "glioblastoma, grade 4")
+tumor <- tumor[order(tumor$log_pt), ]
+
+# Perform convolution for tumor and non-tumor data with the selected cell types
+conv_tumor <- convolve(tumor[[cell_type_1]], rev(tumor[[cell_type_2]]), type = "open")
+conv_non_tumor <- convolve(non_tumor[[cell_type_1]], rev(non_tumor[[cell_type_2]]), type = "open")
+
+# Find peaks for tumor and non-tumor data
+peak_tumor <- which.max(conv_tumor)
+peak_non_tumor <- which.max(conv_non_tumor)
+
+# Retrieve pseudotime for these peaks
+tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+
+# Print peak pseudotime results
+print(paste("Tumor peak occurs at pseudotime:", tumor_peak_pseudotime))
+print(paste("Non-tumor peak occurs at pseudotime:", non_tumor_peak_pseudotime))
+
+# Pad conv_non_tumor with zeros to match the length of conv_tumor
+conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+
+# Combine results into a data frame
+comparison_data <- data.frame(
+  Index = 1:length(conv_tumor),
+  tumor = conv_tumor,
+  non_tumor = conv_non_tumor_padded
+)
+
+# Print to verify
+print(comparison_data)
+
+# Plot convolution results for tumor vs. non_tumor data and annotate with pseudotime
+ggplot(comparison_data, aes(x = Index)) +
+  geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+  geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+  
+  # Add text annotation for the pseudotime at the tumor peak
+  geom_text(aes(x = peak_tumor, y = conv_tumor[peak_tumor], 
+                label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2))), 
+            color = "red", vjust = -1.5, size = 4) +
+  
+  # Add text annotation for the pseudotime at the non-tumor peak
+  geom_text(aes(x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2))), 
+            color = "blue", vjust = -1.5, size = 4) +
+  
+  labs(
+    title = paste("Convolution Results:", cell_type_1, "vs", cell_type_2, "in Tumor vs Non-tumor"),
+    subtitle = paste(cell_type_1, "and", cell_type_2),
+    y = paste("Convolution Output (Interaction between", cell_type_1, "and", cell_type_2, ")"), 
+    x = "Pseudotime (Ordered by log_pt)"
+  ) +
+  scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+  theme_minimal()
+```
+
+**Which pathways have strong interaction with the cytotoxic t cell signaure**
+
+```{r fig.align='center', fig.height=12, fig.width=12}
+gsva.es_temp_new <- gsva.es_temp
+
+colnames(gsva.es_temp_new) <- gsub("HALLMARK_", "", colnames(gsva.es_temp_new))
+
+# List of all cell types (excluding Cytotoxic T cells)
+cell_types <- colnames(gsva.es_temp_new)[1:50]  # Add your full list here
+cell_type_1 <- "Regulatory_T_cell" # "Cytotoxic_T_cell"  # Cytotoxic T cells are the fixed cell type
+
+gsva.es_temp_new <- gsva.es_temp_new[rownames(gsvaPar_cell_markers.es), ]
+all(rownames(gsva.es_temp_new) == rownames(gsvaPar_cell_markers.es))
+
+# Ensure proper alignment between gsva.es_temp_new and gsvaPar_cell_markers.es
+gsva.es_temp_new[, cell_type_1] <- gsvaPar_cell_markers.es[, cell_type_1]
+
+gsva.es_temp_new %>%
+  correlate(method = "spearman") %>%
+  shave() %>%
+  rplot(print_cor = T) +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+
+gsva.es_temp_new[, 1:50] <- scale(gsva.es_temp_new[, 1:50])
+
+gsva.es_temp_new$log_pt <- log(gsva.es_temp_new$pt)
+
+# Initialize a data frame to store the results for each cell type
+results <- data.frame(Cell_Type = character(), Peak_Pseudotime = numeric(), Peak_Broadness = numeric())
+
+# Loop through each cell type and perform the convolution analysis
+for (cell_type_2 in cell_types) {
+  
+  # Sort data by pseudotime (log_pt)
+  gsva.es_temp_new <- gsva.es_temp_new[order(gsva.es_temp_new$log_pt), ]
+  
+  # Subset the data for non-tumor and tumor groups
+  non_tumor <- subset(gsva.es_temp_new, Group == "non-tumor")
+  # non_tumor[, 1:50] <- scale(non_tumor[, 1:50])
+  non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+  
+  tumor <- subset(gsva.es_temp_new, Group == "glioblastoma, grade 4")
+  # tumor[, 1:50] <- scale(tumor[, 1:50])
+  tumor <- tumor[order(tumor$log_pt), ]
+  
+  # Perform convolution for tumor and non-tumor data with the selected cell types
+  conv_tumor <- convolve(tumor[[cell_type_1]], rev(tumor[[cell_type_2]]), type = "open")
+  conv_non_tumor <- convolve(non_tumor[[cell_type_1]], rev(non_tumor[[cell_type_2]]), type = "open")
+  
+  # Find peaks for tumor and non-tumor data
+  if (!all(is.na(conv_tumor)) && length(unique(conv_tumor)) > 1) {
+    peak_tumor <- which.max(conv_tumor)
+    tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+    
+    # Calculate peak broadness for tumor
+    peak_value <- conv_tumor[peak_tumor]
+    half_max <- peak_value / 2  # Half maximum
+    
+    # Find where convolution value is closest to half_max on both sides of the peak
+    left_index <- max(which(conv_tumor[1:peak_tumor] <= half_max), na.rm = TRUE)
+    right_index <- min(which(conv_tumor[peak_tumor:length(conv_tumor)] <= half_max), na.rm = TRUE) + peak_tumor - 1
+    tumor_peak_broadness <- right_index - left_index
+  } else {
+    tumor_peak_pseudotime <- NA
+    tumor_peak_broadness <- NA
+  }
+  
+  if (!all(is.na(conv_non_tumor)) && length(unique(conv_non_tumor)) > 1) {
+    peak_non_tumor <- which.max(conv_non_tumor)
+    non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+  } else {
+    non_tumor_peak_pseudotime <- NA
+  }
+  
+  # Append the results to the data frame
+  results <- rbind(results, data.frame(
+    Cell_Type = cell_type_2,
+    Peak_Pseudotime = tumor_peak_pseudotime,
+    Peak_Broadness = tumor_peak_broadness
+  ))
+  
+  # Pad conv_non_tumor with zeros to match the length of conv_tumor
+  conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+  
+  # Combine results into a data frame for plotting
+  comparison_data <- data.frame(
+    Index = 1:length(conv_tumor),
+    tumor = conv_tumor,
+    non_tumor = conv_non_tumor_padded
+  )
+  
+  # Create the base plot
+  p <- ggplot(comparison_data, aes(x = Index)) +
+    geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+    geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+    labs(
+      title = paste("Convolution Results:", cell_type_1, "vs", cell_type_2, "\nin Tumor vs Non-tumor"),
+      subtitle = paste(cell_type_1, "and", cell_type_2),
+      y = paste("Convolution Output (Interaction between", cell_type_1, "\nand", cell_type_2, ")"), 
+      x = "Pseudotime (Ordered by log_pt)"
+    ) +
+    scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+    theme_minimal()
+  
+  print(p)
+  
+  # Conditionally add text annotation for the tumor peak (if valid)
+  if (!is.na(tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_tumor, y = conv_tumor[peak_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2)), 
+                      color = "red", vjust = -1.5, size = 4)
+  }
+  
+  # Conditionally add text annotation for the non-tumor peak (if valid)
+  if (!is.na(non_tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2)), 
+                      color = "blue", vjust = -1.5, size = 4)
+  }
+  
+  # Print and save the plot for each cell type
+  print(p)
+  ggsave(filename = paste0("Convolution_", cell_type_1, "_vs_", cell_type_2, ".png"), plot = p)
+}
+
+# Print out the results for peak pseudotime and broadness
+print(results)
+```
+
+**Which pathways have strong interaction with the regulatory T cell signaure**
+
+```{r fig.align='center', fig.height=12, fig.width=12}
+gsva.es_temp_new <- gsva.es_temp
+
+# gsva.es_temp_new[, 1:50] <- scale(gsva.es_temp_new[, 1:50])
+
+colnames(gsva.es_temp_new) <- gsub("HALLMARK_", "", colnames(gsva.es_temp_new))
+
+# List of all cell types (excluding Cytotoxic T cells)
+cell_types <- colnames(gsva.es_temp_new)[1:50]  # Add your full list here
+cell_type_1 <- "Cytotoxic_T_cell" # "Cytotoxic_T_cell"  # Cytotoxic T cells are the fixed cell type
+
+gsva.es_temp_new <- gsva.es_temp_new[rownames(gsvaPar_cell_markers.es), ]
+all(rownames(gsva.es_temp_new) == rownames(gsvaPar_cell_markers.es))
+
+# Ensure proper alignment between gsva.es_temp_new and gsvaPar_cell_markers.es
+gsva.es_temp_new[, cell_type_1] <- gsvaPar_cell_markers.es[, cell_type_1]
+
+gsva.es_temp_new %>%
+  correlate(method = "spearman") %>%
+  shave() %>%
+  rplot(print_cor = T) +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+
+gsva.es_temp_new[, 1:50] <- scale(gsva.es_temp_new[, 1:50])
+
+gsva.es_temp_new$log_pt <- log(gsva.es_temp_new$pt)
+
+# Initialize a data frame to store the results for each cell type
+results <- data.frame(Cell_Type = character(), Peak_Pseudotime = numeric(), Peak_Broadness = numeric())
+
+# Loop through each cell type and perform the convolution analysis
+for (cell_type_2 in cell_types) {
+  
+  # Sort data by pseudotime (log_pt)
+  gsva.es_temp_new <- gsva.es_temp_new[order(gsva.es_temp_new$log_pt), ]
+  
+  # Subset the data for non-tumor and tumor groups
+  non_tumor <- subset(gsva.es_temp_new, Group == "non-tumor")
+  # non_tumor[, 1:50] <- scale(non_tumor[, 1:50])
+  non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+  
+  tumor <- subset(gsva.es_temp_new, Group == "glioblastoma, grade 4")
+  # tumor[, 1:50] <- scale(tumor[, 1:50])
+  tumor <- tumor[order(tumor$log_pt), ]
+  
+  # Perform convolution for tumor and non-tumor data with the selected cell types
+  conv_tumor <- convolve(tumor[[cell_type_1]], rev(tumor[[cell_type_2]]), type = "open")
+  conv_non_tumor <- convolve(non_tumor[[cell_type_1]], rev(non_tumor[[cell_type_2]]), type = "open")
+  
+  # Find peaks for tumor and non-tumor data
+  if (!all(is.na(conv_tumor)) && length(unique(conv_tumor)) > 1) {
+    peak_tumor <- which.max(conv_tumor)
+    tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+    
+    # Calculate peak broadness for tumor
+    peak_value <- conv_tumor[peak_tumor]
+    half_max <- peak_value / 2  # Half maximum
+    
+    # Find where convolution value is closest to half_max on both sides of the peak
+    left_index <- max(which(conv_tumor[1:peak_tumor] <= half_max), na.rm = TRUE)
+    right_index <- min(which(conv_tumor[peak_tumor:length(conv_tumor)] <= half_max), na.rm = TRUE) + peak_tumor - 1
+    tumor_peak_broadness <- right_index - left_index
+  } else {
+    tumor_peak_pseudotime <- NA
+    tumor_peak_broadness <- NA
+  }
+  
+  if (!all(is.na(conv_non_tumor)) && length(unique(conv_non_tumor)) > 1) {
+    peak_non_tumor <- which.max(conv_non_tumor)
+    non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+  } else {
+    non_tumor_peak_pseudotime <- NA
+  }
+  
+  # Append the results to the data frame
+  results <- rbind(results, data.frame(
+    Cell_Type = cell_type_2,
+    Peak_Pseudotime = tumor_peak_pseudotime,
+    Peak_Broadness = tumor_peak_broadness
+  ))
+  
+  # Pad conv_non_tumor with zeros to match the length of conv_tumor
+  conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+  
+  # Combine results into a data frame for plotting
+  comparison_data <- data.frame(
+    Index = 1:length(conv_tumor),
+    tumor = conv_tumor,
+    non_tumor = conv_non_tumor_padded
+  )
+  
+  # Create the base plot
+  p <- ggplot(comparison_data, aes(x = Index)) +
+    geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+    geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+     # Add smoothing using LOESS
+    geom_smooth(aes(y = tumor, color = "tumor"), 
+                method = "loess", se = FALSE, span = 0.2, size = 1) +
+    geom_smooth(aes(y = non_tumor, color = "non_tumor"), 
+                method = "loess", se = FALSE, span = 0.2, size = 1, linetype = "dashed") +
+    labs(
+      title = paste("Convolution Results:", cell_type_1, "vs", cell_type_2, "\nin Tumor vs Non-tumor"),
+      subtitle = paste(cell_type_1, "and", cell_type_2),
+      y = paste("Convolution Output (Interaction between", cell_type_1, "\nand", cell_type_2, ")"), 
+      x = "Pseudotime (Ordered by log_pt)"
+    ) +
+    scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+    theme_minimal()
+  
+  print(p)
+  
+  # Conditionally add text annotation for the tumor peak (if valid)
+  if (!is.na(tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_tumor, y = conv_tumor[peak_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2)), 
+                      color = "red", vjust = -1.5, size = 4)
+  }
+  
+  # Conditionally add text annotation for the non-tumor peak (if valid)
+  if (!is.na(non_tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2)), 
+                      color = "blue", vjust = -1.5, size = 4)
+  }
+  
+  # Print and save the plot for each cell type
+  print(p)
+  ggsave(filename = paste0("Convolution_", cell_type_1, "_vs_", cell_type_2, ".png"), plot = p)
+}
+
+# Print out the results for peak pseudotime and broadness
+print(results)
+```
+
+**Most sustained cell-cell interaction signature**
+
+```{r fig.align='center'}
+gsva.es_temp_new <- gsvaPar_cell_markers.es
+
+# gsva.es_temp_new[, 1:50] <- scale(gsva.es_temp_new[, 1:50])
+
+# List of all cell types (excluding Cytotoxic T cells)
+cell_types <- colnames(gsvaPar_cell_markers.es)[1:57]  # Add your full list here
+cell_type_1 <- "CD8_cytotoxic" # "Cytotoxic_T_cell"  # Cytotoxic T cells are the fixed cell type
+
+# Initialize a data frame to store the results for each cell type
+results <- data.frame(Cell_Type = character(), Peak_Pseudotime = numeric(), Peak_Broadness = numeric())
+
+# Loop through each cell type and perform the convolution analysis
+for (cell_type_2 in cell_types) {
+  
+  # Sort data by pseudotime (log_pt)
+  gsva.es_temp_new <- gsva.es_temp_new[order(gsva.es_temp_new$log_pt), ]
+  
+  # Subset the data for non-tumor and tumor groups
+  non_tumor <- subset(gsva.es_temp_new, Group == "non-tumor")
+  # non_tumor[, 1:50] <- scale(non_tumor[, 1:50])
+  non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+  
+  tumor <- subset(gsva.es_temp_new, Group == "glioblastoma, grade 4")
+  # tumor[, 1:50] <- scale(tumor[, 1:50])
+  tumor <- tumor[order(tumor$log_pt), ]
+  
+  # Perform convolution for tumor and non-tumor data with the selected cell types
+  conv_tumor <- convolve(tumor[[cell_type_1]], rev(tumor[[cell_type_2]]), type = "open")
+  conv_non_tumor <- convolve(non_tumor[[cell_type_1]], rev(non_tumor[[cell_type_2]]), type = "open")
+  
+  # Find peaks for tumor and non-tumor data
+  if (!all(is.na(conv_tumor)) && length(unique(conv_tumor)) > 1) {
+    peak_tumor <- which.max(conv_tumor)
+    tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+    
+    # Calculate peak broadness for tumor
+    peak_value <- conv_tumor[peak_tumor]
+    half_max <- peak_value / 2  # Half maximum
+    
+    # Find where convolution value is closest to half_max on both sides of the peak
+    left_index <- max(which(conv_tumor[1:peak_tumor] <= half_max), na.rm = TRUE)
+    right_index <- min(which(conv_tumor[peak_tumor:length(conv_tumor)] <= half_max), na.rm = TRUE) + peak_tumor - 1
+    tumor_peak_broadness <- right_index - left_index
+  } else {
+    tumor_peak_pseudotime <- NA
+    tumor_peak_broadness <- NA
+  }
+  
+  if (!all(is.na(conv_non_tumor)) && length(unique(conv_non_tumor)) > 1) {
+    peak_non_tumor <- which.max(conv_non_tumor)
+    non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+  } else {
+    non_tumor_peak_pseudotime <- NA
+  }
+  
+  # Append the results to the data frame
+  results <- rbind(results, data.frame(
+    Cell_Type = cell_type_2,
+    Peak_Pseudotime = tumor_peak_pseudotime,
+    Peak_Broadness = tumor_peak_broadness
+  ))
+  
+  # Pad conv_non_tumor with zeros to match the length of conv_tumor
+  conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+  
+  # Combine results into a data frame for plotting
+  comparison_data <- data.frame(
+    Index = 1:length(conv_tumor),
+    tumor = conv_tumor,
+    non_tumor = conv_non_tumor_padded
+  )
+  
+  # Create the base plot
+  p <- ggplot(comparison_data, aes(x = Index)) +
+    geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+    geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+    labs(
+      title = paste("Convolution Results:", cell_type_1, "vs", cell_type_2, "\nin Tumor vs Non-tumor"),
+      subtitle = paste(cell_type_1, "and", cell_type_2),
+      y = paste("Convolution Output (Interaction between", cell_type_1, "\nand", cell_type_2, ")"), 
+      x = "Index"
+    ) +
+    scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+    theme_minimal()
+  
+  print(p)
+  
+  # Conditionally add text annotation for the tumor peak (if valid)
+  if (!is.na(tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_tumor, y = conv_tumor[peak_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2)), 
+                      color = "red", vjust = -1.5, size = 4)
+  }
+  
+  # Conditionally add text annotation for the non-tumor peak (if valid)
+  if (!is.na(non_tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2)), 
+                      color = "blue", vjust = -1.5, size = 4)
+  }
+  
+  # Print and save the plot for each cell type
+  print(p)
+  ggsave(filename = paste0("Convolution_", cell_type_1, "_vs_", cell_type_2, ".png"), plot = p)
+}
+
+# Print out the results for peak pseudotime and broadness
+print(results)
+```
+
+### GBmap markers
+
+```{r fig.align='center'}
+markers <- read_xlsx("data/media-1.xlsx",
+                     sheet = "best_cell_markers")
+
+head(markers)
+dim(markers)
+
+markers_sub <- dplyr::filter(markers,# Brain
+                  p_val_adj < 0.05)
+dim(markers_sub)
+
+markers_sub$gene <- toupper(markers_sub$gene)
+celltype <- unique(markers_sub$cluster)
+
+cell_markers <- list()
+
+for (cell in celltype) {
+  # m_df <- read_excel(paste0("data/", m))
+  cluster <- markers_sub[markers_sub$cluster == cell, ]$cluster
+  cluster <- unique(gsub(" ", "_", cluster))
+  cell_markers_list <-  markers_sub[markers_sub$cluster == cell, ]$gene
+  cell_markers[[cluster]] <- na.omit(cell_markers_list)
+}
+
+filtered_list <- Filter(function(x) length(x) >= 5, cell_markers)
+
+gsvaPar_cell_markers <- ssgseaParam(t(exprs_data_with_genes), filtered_list)
+
+gsvaPar_cell_markers.es <- gsva(gsvaPar_cell_markers, verbose=FALSE)
+dim(gsvaPar_cell_markers.es)
+
+gsvaPar_cell_markers.es <- as.data.frame(t(gsvaPar_cell_markers.es))
+
+all(rownames(gsvaPar_cell_markers.es) == meta$Row.names)
+groups <- factor(meta$Group)
+Groups_df <- data.frame(Groups = groups)
+
+pheatmap(t(gsvaPar_cell_markers.es), 
+         annotation_col = annotation_col, 
+         annotation_colors = ann_colors,
+         main = "Markers from GBmap",
+         scale = "row", 
+         cluster_rows = TRUE, cluster_cols = TRUE)
+```
+
+```{r fig.align='center'}
+groups <- factor(group)
+Groups_df <- data.frame(Groups = groups)
+Groups_df$Groups <- as.character(Groups_df$Groups)
+Groups_df$Groups[Groups_df$Groups=="non-tumor"] <- "normal"
+Groups_df$Groups[Groups_df$Groups=="glioblastoma, grade 4"] <- "grade4_glioblastoma"
+groups <- Groups_df$Groups
+groups <- factor(groups,
+                 levels = c("normal", "grade4_glioblastoma"))
+
+model_mat <- model.matrix(~ 0 + groups)
+colnames(model_mat) <- levels(groups)
+
+fit <- lmFit(t(gsvaPar_cell_markers.es[, -c(58:60)]),
+              model_mat)
+
+contrast_matrix <- makeContrasts(tumour_vs_normal = grade4_glioblastoma  - normal,
+                                 levels = model_mat)
+
+fit2 <- contrasts.fit(fit,
+                      contrast_matrix)
+
+fit2 <- eBayes(fit2)
+
+top_table <- topTable(fit2, adjust.method = "fdr", number = Inf)
+
+top_table_up_sig_cell_markers <- top_table[top_table$adj.P.Val < 0.05, ]
+dim(top_table_up_sig_cell_markers)
+
+top_table_up_sig_cell_markers %>%
+  head(10) %>%
+  knitr::kable(caption="Top 10 differential enrichment of cell signatures",
+               "pipe")
+
+pheatmap(t(gsvaPar_cell_markers.es[, rownames(top_table_up_sig_cell_markers)]), 
+         annotation_col = annotation_col, 
+         annotation_colors = ann_colors,
+         scale = "row", 
+         main = "Cell signatures from GBmap",
+         cluster_rows = TRUE, cluster_cols = TRUE)
+```
+
+**PCA**
+
+```{r}
+group <- meta$Group
+group[group!="non-tumor"] <- "glioblastoma, grade 4"
+
+group <- factor(group,
+                levels = c("non-tumor",  "glioblastoma, grade 4"))
+
+# iris.umap_learn <- umap::umap(t(gsva.es), method="umap-learn")
+pca <- prcomp(gsvaPar_cell_markers.es)
+
+## make a scree plot
+pca.var <- pca$sdev^2
+pca.var.per <- round(pca.var/sum(pca.var)*100, 1)
+pca.var.per
+
+barplot(pca.var.per, 
+        main="Scree Plot", 
+        xlab="Principal Component", 
+        ylab="Percent Variation")
+
+pcs <- data.frame(PC1 = pca$x[, 1],
+                  PC2 = pca$x[, 2],
+                  Group = group)
+
+pcs$Group <- factor(pcs$Group,
+                    levels = c("non-tumor", "glioblastoma, grade 4"))
+
+plot <- ggplot(pcs,
+               aes(x = PC1, y = PC2,
+                   color = Group)) +
+                geom_point(size = 3) +
+                ggtitle("Cell signature-based PCA plot of Healthy\nVs Tumour Samples") +
+                theme_bw() +
+                xlab(paste0("PC1: ", pca.var.per[1], "%")) +
+                ylab(paste0("PC2: ", pca.var.per[2], "%")) +
+                theme_minimal() +
+                scale_color_manual(values = c( "blue", "red")) +
+                theme(aspect.ratio = 1)
+
+plot
+```
+
+**Pseudotime calculation**
+
+```{r}
+library(robustbase)
+
+best_features <- abs(pca$rotation[, 1])
+best_features <- sort(best_features, decreasing = T)
+best_features <- names(best_features)[1:10]
+
+all(rownames(gsvaPar_cell_markers.es) == meta$Row.names) # T
+gsvaPar_cell_markers.es$Group <- meta$Group
+
+healthy_data <- subset(gsvaPar_cell_markers.es[, c(best_features, "Group")],
+                            Group == "non-tumor")
+healthy_data$Group <- NULL
+
+robust_cov <- covMcd(healthy_data)
+
+robust_mean <- robust_cov$center
+robust_cov_matrix <- robust_cov$cov
+
+mahalanobis_distances <- apply(gsvaPar_cell_markers.es[, best_features], 
+                               1, function(row) {
+                                 mahalanobis(row, 
+                                             robust_mean, 
+                                             robust_cov_matrix)
+                               })
+
+gsvaPar_cell_markers.es$log_pt <- log(mahalanobis_distances)
+```
+
+
+```{r fig.align='center', fig.width=14, fig.height=14}
+gsvaPar_cell_markers.es$Group <- factor(gsvaPar_cell_markers.es$Group,
+                    levels = c("non-tumor", "glioblastoma, grade 4"))
+
+ggplot(gsvaPar_cell_markers.es,
+       aes(x = log_pt,
+           group = Group,
+           color = Group,
+           fill = Group)) +
+  geom_density(alpha = 0.6) +
+  ggtitle("Pathway progression to Glioblastoma using Cell signatures") +
+  xlab("log Pseudotime") +
+  theme_bw() +
+  scale_fill_manual(values = c( "blue", "red")) +
+  theme_minimal()
+
+ggplot(gsvaPar_cell_markers.es, aes(x = log_pt, y = Perivascular_fibroblast)) +
+  geom_point(size = 1, alpha = 0.7, aes(color = Group)) +
+  geom_smooth(method = "loess", se = F, color = "black") +
+  labs(title = "Pseudotime vs Fibroblast  with LOESS (Outliers Included)", 
+       x = "Pseudotime (Distance from Root Centroid)", 
+       y = "Perivascular_fibroblast",
+       color = "Tumor Status") +
+  scale_color_manual(values = c( "red", "blue"), 
+                     labels = c("Stage4 Glioblastoma", "non-tumour")) +
+  theme_minimal()
+
+# Define the cell types you're interested in
+cell_types <- names(pca$rotation[, 1])  # Add more cell types as needed
+cell_types <- gsub("\\(.*?\\)", "", cell_types) 
+cell_types <- gsub("\\+", "", cell_types)
+cell_types <- gsub("\\-", "", cell_types)
+cell_types <- gsub("\\/", "", cell_types)
+
+colnames(gsvaPar_cell_markers.es) <- gsub("\\(.*?\\)", 
+                                         "", colnames(gsvaPar_cell_markers.es))
+
+colnames(gsvaPar_cell_markers.es) <- gsub("\\+", 
+                                         "", colnames(gsvaPar_cell_markers.es))
+colnames(gsvaPar_cell_markers.es) <- gsub("\\-", 
+                                         "", colnames(gsvaPar_cell_markers.es))
+colnames(gsvaPar_cell_markers.es) <- gsub("\\/", 
+                                         "", colnames(gsvaPar_cell_markers.es))
+
+# Loop through each cell type and generate the corresponding plot
+for (cell_type in cell_types) {
+  # Generate the plot for the current cell type
+  p <- ggplot(gsvaPar_cell_markers.es, aes_string(x = "log_pt", 
+                                      y = cell_type)) +
+    geom_point(size = 1, alpha = 0.7, aes(color = Group)) +
+    geom_smooth(method = "loess", se = FALSE, color = "black") +
+    labs(title = paste("Pseudotime vs", cell_type, "with LOESS (Outliers Included)"), 
+         x = "Pseudotime (Distance from Root Centroid)", 
+         y = cell_type,
+         color = "Diabetic Status") +
+    scale_color_manual(values = c( "blue", "red"), 
+                       labels = c("non-tumour", "Stage4 Glioblastoma")) +
+    theme_minimal()
+
+  # Print the plot
+  print(p)
+}
+
+gsvaPar_cell_markers.es %>%
+  correlate(method = "spearman") %>%
+  shave() %>%
+  rplot(print_cor = T) +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+```
+
+**Cell-type decomposition**
+
+```{r}
+# Load ggpubr package
+library(ggpubr)
+
+cell_abundance <- meta
+
+corrected_bulk <- exprs_data_with_genes
+
+# Scale the corrected bulk data
+bulk_scaled <- t(corrected_bulk)
+
+# Pathway list (replace with your filtered list of pathways)
+pways <- names(filtered_list)
+
+# names(filtered_list) <- pways
+
+for (pway in pways) {
+  
+  marker_genes <- filtered_list[[pway]]  # Extract marker genes for the pathway
+  
+  gsva_score <- gsvaPar_cell_markers.es[, pway]  # GSVA score for the pathway
+  
+  marker_genes <- intersect(marker_genes, rownames(bulk_scaled))
+  
+  # Subset the bulk expression data to include only marker genes
+  bulk_markers <- bulk_scaled[rownames(bulk_scaled) %in% marker_genes, ]
+  
+  # Calculate the variance of each marker gene across samples
+  markers_oi_df <- markers_sub[markers_sub$gene %in% marker_genes, ]
+  
+  markers_oi_df$cluster <- gsub(" ", "_", markers_oi_df$cluster)
+  markers_oi_df$cluster <- gsub("-", "_", markers_oi_df$cluster)
+  markers_oi_df$cluster <- gsub("\\/", "_", markers_oi_df$cluster)
+  markers_oi_df <- markers_oi_df[markers_oi_df$cluster == pway, ]
+  
+  foldchanges <- markers_oi_df$avg_log2FC
+  names(foldchanges) <- markers_oi_df$gene
+
+  # gene_variances <- apply(bulk_markers, 1, var)
+  gene_variances <- sort(foldchanges, decreasing = TRUE)
+  
+  # Use all high variance genes (or sugene# Use all high variance genes (or subset if needed)
+  high_variance_genes <- names(gene_variances)
+  
+  # Subset bulk data using high-variance marker genes
+  bulk_high_variance <- bulk_markers[high_variance_genes, ]
+  
+  # Create a diagonal weight matrix using the variances of the high-variance marker genes
+  W <- diag(gene_variances[high_variance_genes])
+  
+  # Multiply the bulk expression matrix by the variances (element-wise multiplication)
+  XW <- t(t(bulk_high_variance) * gene_variances[high_variance_genes])
+  
+  # Perform PCA on the weighted expression matrix
+  pca_result <- prcomp(t(XW), center = TRUE, scale. = FALSE)
+  
+  # Create a data frame for PCA results
+  x_df <- as.data.frame(pca_result$x)
+  
+  # Identify the component most correlated with the GSVA score
+  ind <- which.max(sapply(x_df, function(x) cor(x, gsva_score, method = "spearman")))
+  
+  # Extract the most correlated principal component
+  first_PC <- pca_result$x[, ind]
+  
+  # Normalize PC1 values to [0, 1] to interpret as proportions
+  normalized_proportion <- (first_PC - min(first_PC)) / (max(first_PC) - min(first_PC))
+  
+  # Plot the barplot for the estimated proportions
+  # barplot(normalized_proportion, main = paste0("Estimated Proportion of ", pway), 
+  #        col = rainbow(length(normalized_proportion)), xlab = "Samples", ylab =    # 
+  #"Proportion")
+  
+  # Add normalized proportions to the cell_abundance data for the current pathway
+  cell_abundance[, pway] <- as.numeric(normalized_proportion)
+  
+  # Ensure consistent group levels
+  
+  names(cell_abundance)[names(cell_abundance) == "Group"] <- "Group"
+  
+  cell_abundance$Group <- factor(cell_abundance$Group,
+                              levels = c("non-tumor", "glioblastoma, grade 4"))
+  
+  # Plot boxplot for the pathway across the groups
+  p <- ggplot(cell_abundance,
+              aes(x = Group,
+                  fill = Group,
+                  y = .data[[pway]])) +  # Use .data[[pway]] to reference column dynamically
+    ggtitle(pway) +
+    geom_boxplot(outlier.shape = NA) +
+    theme_bw() +
+    theme_minimal() +
+    scale_fill_manual(values = c("blue", "red"))+
+    xlab("Group") +
+    ylab(pway) +
+    stat_compare_means(method = "wilcox.test", 
+                       label = "p.signif", 
+                       comparisons = list(c("non-tumor", 
+                                            "glioblastoma, grade 4"))) +
+    theme(aspect.ratio = 1)
+  
+  print(p)
+}
+
+all(colnames(cell_abundance$Row.names) == rownames(gsva.es_temp))
+
+cell_abundance$log_pt <- log(gsva.es_temp$pt)
+
+cell_abundance %>%
+  correlate(method = "spearman") %>%
+  shave() %>%
+  rplot(print_cor = T) +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+```
+
+**Visualising cell abundance over time**
+
+```{r}
+groups <- factor(group)
+Groups_df <- data.frame(Groups = groups)
+Groups_df$Groups <- as.character(Groups_df$Groups)
+Groups_df$Groups[Groups_df$Groups=="non-tumor"] <- "normal"
+Groups_df$Groups[Groups_df$Groups=="glioblastoma, grade 4"] <- "grade4_glioblastoma"
+groups <- Groups_df$Groups
+groups <- factor(groups,
+                 levels = c("normal", "grade4_glioblastoma"))
+
+model_mat <- model.matrix(~ 0 + groups)
+colnames(model_mat) <- levels(groups)
+
+fit <- lmFit(t(cell_abundance[, 4:57]),
+              model_mat)
+
+contrast_matrix <- makeContrasts(tumour_vs_normal = grade4_glioblastoma  - normal,
+                                 levels = model_mat)
+
+fit2 <- contrasts.fit(fit,
+                      contrast_matrix)
+
+fit2 <- eBayes(fit2)
+
+top_table <- topTable(fit2, adjust.method = "fdr", number = Inf)
+
+top_table_up_sig_cell_abundance <- top_table[top_table$adj.P.Val < 0.05, ]
+dim(top_table_up_sig_cell_abundance)
+
+top_table_up_sig_cell_abundance %>%
+  head(10) %>%
+  knitr::kable(caption = "Changes in cell abundance in non-tumor vs tumor samples",
+               "pipe")
+
+cells_to_plot <- rownames(top_table) # rownames(top_table_up_sig_cell_abundance)
+
+pheatmap(t(cell_abundance[,cells_to_plot]),
+         annotation_col = annotation_col, 
+         main = "Cell abundance",
+         annotation_colors = ann_colors)
+```
+
+```{r fig.align='center'}
+all(rownames(cell_abundance) == rownames(gsvaPar_cell_markers.es))
+cell_abundance$log_pt <- gsvaPar_cell_markers.es$log_pt
+
+for (sig in sort(cells_to_plot)) {
+  
+  p <- ggplot(cell_abundance, aes(x = log_pt, y = .data[[sig]])) +
+    geom_point(aes(color = Group)) +
+    geom_smooth(method = "loess", se = F, color="black") +  # Optionally add a smoothed line
+    labs(title = paste0(sig, " Abundance Along Pseudotime"), 
+         x = "log(Pseudotime)", 
+         y = sig) +
+    scale_color_manual(values = c("blue", "red"))+
+    guides(color = guide_legend(override.aes = list(size = 4))) + 
+    theme_minimal()
+  print(p)
+}
+```
+
+**Visualise cell abundances over time for cells of interest**
+
+```{r fig.align='center', fig.height=10, fig.width=10}
+cells_oi <- c("Reg_T", "Plasma_B", "Perivascular_fibroblast", "Pericyte", "OPC",
+              "NK", "Neuron", "AC_like", "VLMC")
+cells_df <- gather(cell_abundance,
+            key = "celltype",
+            value = "Abundance",
+            cells_oi)
+
+cells_df$Group <- factor(cells_df$Group,
+                         levels =  c("non-tumor", "glioblastoma, grade 4"))
+
+ggplot(cells_df, aes(x = log_pt, 
+                     y = Abundance, color = Group)) +
+  geom_point(size = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "black") +
+  facet_wrap(~celltype, scales = "free_y") +
+  theme_minimal() +
+  guides(color = guide_legend(override.aes = list(size = 4))) +  # Increase legend dot size
+  labs(title = "Cell  abundance over pseudotime", 
+       x = "log(Pseudotime)", 
+       y = "Cell abundance") +
+  scale_color_manual(values = c("blue", "red"))
+```
+
+**Visualise cell activities over time**
+
+```{r fig.align='center', fig.width=10, fig.height=10}
+tams <- cells_to_plot[grep("TAM", cells_to_plot)]
+hypo <- cells_to_plot[grep("hypo", cells_to_plot, ignore.case = T)]
+
+cells_df <- gather(gsvaPar_cell_markers.es,
+            key = "celltype",
+            value = "Activity",
+            c(hypo, tams))
+
+cells_df$Group <- factor(cells_df$Group,
+                         levels =  c("non-tumor", "glioblastoma, grade 4"))
+
+ggplot(cells_df, aes(x = log_pt, y = Activity, color = Group)) +
+  geom_point(size = 0.5) +
+  geom_smooth(method = "loess", se = FALSE, color = "black") +
+  facet_wrap(~celltype, scales = "free_y") +
+  theme_minimal() +
+  guides(color = guide_legend(override.aes = list(size = 4))) +  # Increase legend dot size
+  labs(title = "Cell  activity over pseudotime", 
+       x = "log(Pseudotime)", 
+       y = "Cell activity") +
+  scale_color_manual(values = c("blue", "red"))
+```
+
+```{r fig.align='center'}
+# Define your cell types of interest here
+cell_type_1 <- "Reg_T"  # Example: Cytotoxic T cells
+cell_type_2 <- "MES_like_hypoxia_MHC"        # Example: Fibroblasts
+
+# Sort data by pseudotime (log_pt)
+gsvaPar_cell_markers.es <- gsvaPar_cell_markers.es[order(gsvaPar_cell_markers.es$log_pt), ]
+
+# Subset the data for non-tumor and tumor groups
+non_tumor <- subset(gsvaPar_cell_markers.es, Group == "non-tumor")
+non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+
+tumor <- subset(gsvaPar_cell_markers.es, Group == "glioblastoma, grade 4")
+tumor <- tumor[order(tumor$log_pt), ]
+
+# Perform convolution for tumor and non-tumor data with the selected cell types
+conv_tumor <- convolve(tumor[[cell_type_1]], 
+                       rev(tumor[[cell_type_2]]), type = "open")
+conv_non_tumor <- convolve(non_tumor[[cell_type_1]], rev(non_tumor[[cell_type_2]]), type = "open")
+
+# Find peaks for tumor and non-tumor data
+peak_tumor <- which.max(conv_tumor)
+peak_non_tumor <- which.max(conv_non_tumor)
+
+# Retrieve pseudotime for these peaks
+tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+
+# Print peak pseudotime results
+print(paste("Tumor peak occurs at pseudotime:", tumor_peak_pseudotime))
+print(paste("Non-tumor peak occurs at pseudotime:", non_tumor_peak_pseudotime))
+
+# Pad conv_non_tumor with zeros to match the length of conv_tumor
+conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+
+# Combine results into a data frame
+comparison_data <- data.frame(
+  Index = 1:length(conv_tumor),
+  tumor = conv_tumor,
+  non_tumor = conv_non_tumor_padded
+)
+
+# Print to verify
+print(comparison_data)
+
+# Plot convolution results for tumor vs. non_tumor data and annotate with pseudotime
+ggplot(comparison_data, aes(x = Index)) +
+  geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+  geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+  
+  # Add text annotation for the pseudotime at the tumor peak
+  geom_text(aes(x = peak_tumor, y = conv_tumor[peak_tumor], 
+                label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2))), 
+            color = "red", vjust = -1.5, size = 4) +
+  
+  # Add text annotation for the pseudotime at the non-tumor peak
+  geom_text(aes(x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2))), 
+            color = "blue", vjust = -1.5, size = 4) +
+  
+  labs(
+    title = paste("Convolution Results:", cell_type_1, "vs", cell_type_2, "in Tumor vs Non-tumor"),
+    subtitle = paste(cell_type_1, "and", cell_type_2),
+    y = paste("Convolution Output (Interaction between", cell_type_1, "and", cell_type_2, ")"), 
+    x = "Pseudotime (Ordered by log_pt)"
+  ) +
+  scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+  theme_minimal()
+```
+
+**Which pathways have strong interaction with the Regulatory t cell signaure**
+
+```{r fig.align='center', fig.height=12, fig.width=12}
+gsva.es_temp_new <- gsva.es_temp
+
+colnames(gsva.es_temp_new) <- gsub("HALLMARK_", "", colnames(gsva.es_temp_new))
+
+# List of all cell types (excluding Cytotoxic T cells)
+cell_types <- colnames(gsva.es_temp_new)[1:50]  # Add your full list here
+cell_type_1 <- "Reg_T" # "Cytotoxic_T_cell"  # Cytotoxic T cells are the fixed cell type
+
+gsva.es_temp_new <- gsva.es_temp_new[rownames(gsvaPar_cell_markers.es), ]
+all(rownames(gsva.es_temp_new) == rownames(gsvaPar_cell_markers.es))
+
+# Ensure proper alignment between gsva.es_temp_new and gsvaPar_cell_markers.es
+gsva.es_temp_new[, cell_type_1] <- gsvaPar_cell_markers.es[, cell_type_1]
+
+gsva.es_temp_new <- relocate(gsva.es_temp_new,cell_type_1,
+                             .before = 1)
+
+gsva.es_temp_new %>%
+  correlate(method = "spearman") %>%
+  shave() %>%
+  rplot(print_cor = T) +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+
+gsva.es_temp_new[, 1:51] <- scale(gsva.es_temp_new[, 1:51])
+
+# Initialize a data frame to store the results for each cell type
+results <- data.frame(Cell_Type = character(), 
+                      Peak_Pseudotime = numeric(), Peak_Broadness = numeric())
+
+# Loop through each cell type and perform the convolution analysis
+for (cell_type_2 in cell_types) {
+  
+  # Sort data by pseudotime (log_pt)
+  gsva.es_temp_new <- gsva.es_temp_new[order(gsva.es_temp_new$log_pt), ]
+  
+  # Subset the data for non-tumor and tumor groups
+  non_tumor <- subset(gsva.es_temp_new, Group == "non-tumor")
+  # non_tumor[, 1:50] <- scale(non_tumor[, 1:50])
+  non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+  
+  tumor <- subset(gsva.es_temp_new, Group == "glioblastoma, grade 4")
+  # tumor[, 1:50] <- scale(tumor[, 1:50])
+  tumor <- tumor[order(tumor$log_pt), ]
+  
+  # Perform convolution for tumor and non-tumor data with the selected cell types
+  conv_tumor <- convolve(tumor[[cell_type_1]], rev(tumor[[cell_type_2]]), type = "open")
+  conv_non_tumor <- convolve(non_tumor[[cell_type_1]], rev(non_tumor[[cell_type_2]]), type = "open")
+  
+  # Find peaks for tumor and non-tumor data
+  if (!all(is.na(conv_tumor)) && length(unique(conv_tumor)) > 1) {
+    peak_tumor <- which.max(conv_tumor)
+    tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+    
+    # Calculate peak broadness for tumor
+    peak_value <- conv_tumor[peak_tumor]
+    half_max <- peak_value / 2  # Half maximum
+    
+    # Find where convolution value is closest to half_max on both sides of the peak
+    left_index <- max(which(conv_tumor[1:peak_tumor] <= half_max), na.rm = TRUE)
+    right_index <- min(which(conv_tumor[peak_tumor:length(conv_tumor)] <= half_max), na.rm = TRUE) + peak_tumor - 1
+    tumor_peak_broadness <- right_index - left_index
+  } else {
+    tumor_peak_pseudotime <- NA
+    tumor_peak_broadness <- NA
+  }
+  
+  if (!all(is.na(conv_non_tumor)) && length(unique(conv_non_tumor)) > 1) {
+    peak_non_tumor <- which.max(conv_non_tumor)
+    non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+  } else {
+    non_tumor_peak_pseudotime <- NA
+  }
+  
+  # Append the results to the data frame
+  results <- rbind(results, data.frame(
+    Cell_Type = cell_type_2,
+    Peak_Pseudotime = tumor_peak_pseudotime,
+    Peak_Broadness = tumor_peak_broadness
+  ))
+  
+  # Pad conv_non_tumor with zeros to match the length of conv_tumor
+  conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+  
+  # Combine results into a data frame for plotting
+  comparison_data <- data.frame(
+    Index = 1:length(conv_tumor),
+    tumor = conv_tumor,
+    non_tumor = conv_non_tumor_padded
+  )
+  
+  # Create the base plot
+  p <- ggplot(comparison_data, aes(x = Index)) +
+    # geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+    #geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+    geom_point(aes(y = tumor, color = "tumor"), size = 2, alpha = 0.7) +
+    geom_point(aes(y = non_tumor, color = "non_tumor"), size = 2, alpha = 0.7) +
+    
+    geom_smooth(aes(y = tumor, color = "tumor"), 
+                method = "loess", se = FALSE, span = 0.2, size = 1) +
+    geom_smooth(aes(y = non_tumor, color = "non_tumor"), 
+                method = "loess", se = FALSE, span = 0.2, size = 1, linetype = "dashed") +
+    
+    labs(
+      title = paste("Convolution Results:", cell_type_1, "vs", cell_type_2, "\nin Tumor vs Non-tumor"),
+      subtitle = paste(cell_type_1, "and", cell_type_2),
+      y = paste("Convolution Output (Interaction between", cell_type_1, "\nand", cell_type_2, ")"), 
+      x = "Pseudotime (Ordered by log_pt)"
+    ) +
+    scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+    theme_minimal()
+  
+  print(p)
+  
+  # Conditionally add text annotation for the tumor peak (if valid)
+  if (!is.na(tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_tumor, y = conv_tumor[peak_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2)), 
+                      color = "red", vjust = -1.5, size = 4)
+  }
+  
+  # Conditionally add text annotation for the non-tumor peak (if valid)
+  if (!is.na(non_tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2)), 
+                      color = "blue", vjust = -1.5, size = 4)
+  }
+  
+  # Print and save the plot for each cell type
+  print(p)
+  ggsave(filename = paste0("Convolution_", cell_type_1, "_vs_", cell_type_2, ".png"), plot = p)
+}
+
+# Print out the results for peak pseudotime and broadness
+print(results)
+
+results <- results[order(results$Peak_Broadness, decreasing = T), ]
+```
+
+**Interactionbetween cell signatures**
+
+```{r}
+gsva.es_temp_new <- gsvaPar_cell_markers.es
+
+# gsva.es_temp_new[, 1:50] <- scale(gsva.es_temp_new[, 1:50])
+
+# List of all cell types (excluding Cytotoxic T cells)
+cell_types <- colnames(gsvaPar_cell_markers.es)[1:54]  # Add your full list here
+cell_type_1 <- "Reg_T" # "Cytotoxic_T_cell"  # Cytotoxic T cells are the fixed cell type
+
+# Initialize a data frame to store the results for each cell type
+results <- data.frame(Cell_Type = character(), Peak_Pseudotime = numeric(), Peak_Broadness = numeric())
+
+# Loop through each cell type and perform the convolution analysis
+for (cell_type_2 in cell_types) {
+  
+  # Sort data by pseudotime (log_pt)
+  gsva.es_temp_new <- gsva.es_temp_new[order(gsva.es_temp_new$log_pt), ]
+  
+  # Subset the data for non-tumor and tumor groups
+  non_tumor <- subset(gsva.es_temp_new, Group == "non-tumor")
+  # non_tumor[, 1:50] <- scale(non_tumor[, 1:50])
+  non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+  
+  tumor <- subset(gsva.es_temp_new, Group == "glioblastoma, grade 4")
+  # tumor[, 1:50] <- scale(tumor[, 1:50])
+  tumor <- tumor[order(tumor$log_pt), ]
+  
+  # Perform convolution for tumor and non-tumor data with the selected cell types
+  conv_tumor <- convolve(tumor[[cell_type_1]], rev(tumor[[cell_type_2]]), type = "open")
+  conv_non_tumor <- convolve(non_tumor[[cell_type_1]], rev(non_tumor[[cell_type_2]]), type = "open")
+  
+  # Find peaks for tumor and non-tumor data
+  if (!all(is.na(conv_tumor)) && length(unique(conv_tumor)) > 1) {
+    peak_tumor <- which.max(conv_tumor)
+    tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+    
+    # Calculate peak broadness for tumor
+    peak_value <- conv_tumor[peak_tumor]
+    half_max <- peak_value / 2  # Half maximum
+    
+    # Find where convolution value is closest to half_max on both sides of the peak
+    left_index <- max(which(conv_tumor[1:peak_tumor] <= half_max), na.rm = TRUE)
+    right_index <- min(which(conv_tumor[peak_tumor:length(conv_tumor)] <= half_max), na.rm = TRUE) + peak_tumor - 1
+    tumor_peak_broadness <- right_index - left_index
+  } else {
+    tumor_peak_pseudotime <- NA
+    tumor_peak_broadness <- NA
+  }
+  
+  if (!all(is.na(conv_non_tumor)) && length(unique(conv_non_tumor)) > 1) {
+    peak_non_tumor <- which.max(conv_non_tumor)
+    non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+  } else {
+    non_tumor_peak_pseudotime <- NA
+  }
+  
+  # Append the results to the data frame
+  results <- rbind(results, data.frame(
+    Cell_Type = cell_type_2,
+    Peak_Pseudotime = tumor_peak_pseudotime,
+    Peak_Broadness = tumor_peak_broadness
+  ))
+  
+  # Pad conv_non_tumor with zeros to match the length of conv_tumor
+  conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+  
+  # Combine results into a data frame for plotting
+  comparison_data <- data.frame(
+    Index = 1:length(conv_tumor),
+    tumor = conv_tumor,
+    non_tumor = conv_non_tumor_padded
+  )
+  
+  # Create the base plot
+  p <- ggplot(comparison_data, aes(x = Index)) +
+    geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+    geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+    labs(
+      title = paste("Convolution Results:", cell_type_1, "vs", cell_type_2, "\nin Tumor vs Non-tumor"),
+      subtitle = paste(cell_type_1, "and", cell_type_2),
+      y = paste("Convolution Output (Interaction between", cell_type_1, "\nand", cell_type_2, ")"), 
+      x = "Index"
+    ) +
+    scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+    theme_minimal()
+  
+  print(p)
+  
+  # Conditionally add text annotation for the tumor peak (if valid)
+  if (!is.na(tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_tumor, y = conv_tumor[peak_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2)), 
+                      color = "red", vjust = -1.5, size = 4)
+  }
+  
+  # Conditionally add text annotation for the non-tumor peak (if valid)
+  if (!is.na(non_tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2)), 
+                      color = "blue", vjust = -1.5, size = 4)
+  }
+  
+  # Print and save the plot for each cell type
+  print(p)
+  ggsave(filename = paste0("Convolution_", cell_type_1, "_vs_", cell_type_2, ".png"), plot = p)
+}
+```
+
+
+**Which pathways have strong interaction with the macrophage or monocyte cell signaure**
+
+```{r fig.align='center', fig.height=12, fig.width=12}
+gsva.es_temp_new <- gsva.es_temp
+
+colnames(gsva.es_temp_new) <- gsub("HALLMARK_", "", colnames(gsva.es_temp_new))
+
+# List of all cell types (excluding Cytotoxic T cells)
+cell_types <- colnames(gsva.es_temp_new)[1:50]  # Add your full list here
+cell_type_1 <- "Mono_hypoxia" # "Cytotoxic_T_cell"  # Cytotoxic T cells are the fixed cell type
+
+gsva.es_temp_new <- gsva.es_temp_new[rownames(gsvaPar_cell_markers.es), ]
+all(rownames(gsva.es_temp_new) == rownames(gsvaPar_cell_markers.es))
+
+# Ensure proper alignment between gsva.es_temp_new and gsvaPar_cell_markers.es
+gsva.es_temp_new[, cell_type_1] <- gsvaPar_cell_markers.es[, cell_type_1]
+
+gsva.es_temp_new <- relocate(gsva.es_temp_new,cell_type_1,
+                             .before = 1)
+
+gsva.es_temp_new %>%
+  correlate(method = "spearman") %>%
+  shave() %>%
+  rplot(print_cor = T) +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+
+gsva.es_temp_new[, 1:51] <- scale(gsva.es_temp_new[, 1:51])
+
+# Initialize a data frame to store the results for each cell type
+results <- data.frame(Cell_Type = character(), 
+                      Peak_Pseudotime = numeric(), Peak_Broadness = numeric())
+
+# Loop through each cell type and perform the convolution analysis
+for (cell_type_2 in cell_types) {
+  
+  # Sort data by pseudotime (log_pt)
+  gsva.es_temp_new <- gsva.es_temp_new[order(gsva.es_temp_new$log_pt), ]
+  
+  # Subset the data for non-tumor and tumor groups
+  non_tumor <- subset(gsva.es_temp_new, Group == "non-tumor")
+  # non_tumor[, 1:50] <- scale(non_tumor[, 1:50])
+  non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+  
+  tumor <- subset(gsva.es_temp_new, Group == "glioblastoma, grade 4")
+  # tumor[, 1:50] <- scale(tumor[, 1:50])
+  tumor <- tumor[order(tumor$log_pt), ]
+  
+  # Perform convolution for tumor and non-tumor data with the selected cell types
+  conv_tumor <- convolve(tumor[[cell_type_1]], rev(tumor[[cell_type_2]]), type = "open")
+  conv_non_tumor <- convolve(non_tumor[[cell_type_1]], rev(non_tumor[[cell_type_2]]), type = "open")
+  
+  # Find peaks for tumor and non-tumor data
+  if (!all(is.na(conv_tumor)) && length(unique(conv_tumor)) > 1) {
+    peak_tumor <- which.max(conv_tumor)
+    tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+    
+    # Calculate peak broadness for tumor
+    peak_value <- conv_tumor[peak_tumor]
+    half_max <- peak_value / 2  # Half maximum
+    
+    # Find where convolution value is closest to half_max on both sides of the peak
+    left_index <- max(which(conv_tumor[1:peak_tumor] <= half_max), na.rm = TRUE)
+    right_index <- min(which(conv_tumor[peak_tumor:length(conv_tumor)] <= half_max), na.rm = TRUE) + peak_tumor - 1
+    tumor_peak_broadness <- right_index - left_index
+  } else {
+    tumor_peak_pseudotime <- NA
+    tumor_peak_broadness <- NA
+  }
+  
+  if (!all(is.na(conv_non_tumor)) && length(unique(conv_non_tumor)) > 1) {
+    peak_non_tumor <- which.max(conv_non_tumor)
+    non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+  } else {
+    non_tumor_peak_pseudotime <- NA
+  }
+  
+  # Append the results to the data frame
+  results <- rbind(results, data.frame(
+    Cell_Type = cell_type_2,
+    Peak_Pseudotime = tumor_peak_pseudotime,
+    Peak_Broadness = tumor_peak_broadness
+  ))
+  
+  # Pad conv_non_tumor with zeros to match the length of conv_tumor
+  conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+  
+  # Combine results into a data frame for plotting
+  comparison_data <- data.frame(
+    Index = 1:length(conv_tumor),
+    tumor = conv_tumor,
+    non_tumor = conv_non_tumor_padded
+  )
+  
+  # Create the base plot
+  p <- ggplot(comparison_data, aes(x = Index)) +
+    # geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+    #geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+    
+    geom_smooth(aes(y = tumor, color = "tumor"), 
+                method = "loess", se = FALSE, span = 0.2, size = 1) +
+    geom_smooth(aes(y = non_tumor, color = "non_tumor"), 
+                method = "loess", se = FALSE, span = 0.2, size = 1, linetype = "dashed") +
+    
+    labs(
+      title = paste("Convolution Results:", cell_type_1, "vs", cell_type_2, "\nin Tumor vs Non-tumor"),
+      subtitle = paste(cell_type_1, "and", cell_type_2),
+      y = paste("Convolution Output (Interaction between", cell_type_1, "\nand", cell_type_2, ")"), 
+      x = "Pseudotime (Ordered by log_pt)"
+    ) +
+    scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+    theme_minimal()
+  
+  print(p)
+  
+  # Conditionally add text annotation for the tumor peak (if valid)
+  if (!is.na(tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_tumor, y = conv_tumor[peak_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2)), 
+                      color = "red", vjust = -1.5, size = 4)
+  }
+  
+  # Conditionally add text annotation for the non-tumor peak (if valid)
+  if (!is.na(non_tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2)), 
+                      color = "blue", vjust = -1.5, size = 4)
+  }
+  
+  # Print and save the plot for each cell type
+  print(p)
+  ggsave(filename = paste0("Convolution_", cell_type_1, "_vs_", cell_type_2, ".png"), plot = p)
+}
+
+# Print out the results for peak pseudotime and broadness
+print(results)
+
+results <- results[order(results$Peak_Broadness, decreasing = T), ]
+```
+
+**Pathway interactions**
+
+```{r fig.align='center'}
+gsva.es_temp_new <- gsva.es_temp
+gsva.es_temp_new$log_pt <- log(gsva.es_temp_new$pt)
+
+gsva.es_temp_new[, 1:50] <- scale(gsva.es_temp_new[, 1:50])
+
+colnames(gsva.es_temp_new) <- gsub("HALLMARK_",
+                                   "", colnames(gsva.es_temp_new))
+
+# List of all cell types (excluding Cytotoxic T cells)
+# Add your full list here)
+cell_types <- gsub("HALLMARK_",
+                  "", rownames(top_table_up_sig))
+
+cell_type_1 <- "KRAS_SIGNALING_DN" # "Cytotoxic_T_cell"  # Cytotoxic T cells are the fixed cell type
+
+# Initialize a data frame to store the results for each cell type
+results <- data.frame(Cell_Type = character(), Peak_Pseudotime = numeric(), Peak_Broadness = numeric())
+
+# Loop through each cell type and perform the convolution analysis
+for (cell_type_2 in cell_types) {
+  
+  # Sort data by pseudotime (log_pt)
+  gsva.es_temp_new <- gsva.es_temp_new[order(gsva.es_temp_new$log_pt), ]
+  
+  # Subset the data for non-tumor and tumor groups
+  non_tumor <- subset(gsva.es_temp_new, Group == "non-tumor")
+  # non_tumor[, 1:50] <- scale(non_tumor[, 1:50])
+  non_tumor <- non_tumor[order(non_tumor$log_pt), ]
+  
+  tumor <- subset(gsva.es_temp_new, Group == "glioblastoma, grade 4")
+  # tumor[, 1:50] <- scale(tumor[, 1:50])
+  tumor <- tumor[order(tumor$log_pt), ]
+  
+  # Perform convolution for tumor and non-tumor data with the selected cell types
+  conv_tumor <- convolve(tumor[[cell_type_1]], 
+                         rev(tumor[[cell_type_2]]), type = "open")
+  
+  conv_non_tumor <- convolve(non_tumor[[cell_type_1]], 
+                             rev(non_tumor[[cell_type_2]]), type = "open")
+  
+  # Find peaks for tumor and non-tumor data
+  if (!all(is.na(conv_tumor)) && length(unique(conv_tumor)) > 1) {
+    peak_tumor <- which.max(conv_tumor)
+    tumor_peak_pseudotime <- tumor$log_pt[peak_tumor]
+    
+    # Calculate peak broadness for tumor
+    peak_value <- conv_tumor[peak_tumor]
+    half_max <- peak_value / 2  # Half maximum
+    
+    # Find where convolution value is closest to half_max on both sides of the peak
+    left_index <- max(which(conv_tumor[1:peak_tumor] <= half_max), na.rm = TRUE)
+    right_index <- min(which(conv_tumor[peak_tumor:length(conv_tumor)] <= half_max), na.rm = TRUE) + peak_tumor - 1
+    tumor_peak_broadness <- right_index - left_index
+  } else {
+    tumor_peak_pseudotime <- NA
+    tumor_peak_broadness <- NA
+  }
+  
+  if (!all(is.na(conv_non_tumor)) && length(unique(conv_non_tumor)) > 1) {
+    peak_non_tumor <- which.max(conv_non_tumor)
+    non_tumor_peak_pseudotime <- non_tumor$log_pt[peak_non_tumor]
+  } else {
+    non_tumor_peak_pseudotime <- NA
+  }
+  
+  # Append the results to the data frame
+  results <- rbind(results, data.frame(
+    Cell_Type = cell_type_2,
+    Peak_Pseudotime = tumor_peak_pseudotime,
+    Peak_Broadness = tumor_peak_broadness
+  ))
+  
+  # Pad conv_non_tumor with zeros to match the length of conv_tumor
+  conv_non_tumor_padded <- c(conv_non_tumor, rep(0, length(conv_tumor) - length(conv_non_tumor)))
+  
+  # Combine results into a data frame for plotting
+  comparison_data <- data.frame(
+    Index = 1:length(conv_tumor),
+    tumor = conv_tumor,
+    non_tumor = conv_non_tumor_padded
+  )
+  
+  # Create the base plot
+  p <- ggplot(comparison_data, aes(x = Index)) +
+    geom_line(aes(y = tumor, color = "tumor"), size = 1.2) +
+    geom_line(aes(y = non_tumor, color = "non_tumor"), size = 1.2, linetype = "dashed") +
+    labs(
+      title = paste("Convolution Results:", cell_type_1, "vs", cell_type_2, "\nin Tumor vs Non-tumor"),
+      subtitle = paste(cell_type_1, "and", cell_type_2),
+      y = paste("Convolution Output (Interaction between", cell_type_1, "\nand", cell_type_2, ")"), 
+      x = "Index"
+    ) +
+    scale_color_manual(values = c("tumor" = "red", "non_tumor" = "blue")) +
+    theme_minimal()
+  
+  print(p)
+  
+  # Conditionally add text annotation for the tumor peak (if valid)
+  if (!is.na(tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_tumor, y = conv_tumor[peak_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(tumor_peak_pseudotime, 2)), 
+                      color = "red", vjust = -1.5, size = 4)
+  }
+  
+  # Conditionally add text annotation for the non-tumor peak (if valid)
+  if (!is.na(non_tumor_peak_pseudotime)) {
+    p <- p + annotate("text", x = peak_non_tumor, y = conv_non_tumor_padded[peak_non_tumor], 
+                      label = paste0("Peak at Pseudotime: ", round(non_tumor_peak_pseudotime, 2)), 
+                      color = "blue", vjust = -1.5, size = 4)
+  }
+  
+  # Print and save the plot for each cell type
+  print(p)
+  ggsave(filename = paste0("Convolution_", cell_type_1, "_vs_", cell_type_2, ".png"), plot = p)
+}
+
+# Print out the results for peak pseudotime and broadness
+print(results)
+```
+
+## Session info
+
+```{r}
+sessionInfo()
+```
+

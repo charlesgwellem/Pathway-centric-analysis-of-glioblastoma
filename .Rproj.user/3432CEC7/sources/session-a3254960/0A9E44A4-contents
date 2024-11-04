@@ -1,0 +1,32 @@
+# Number of simulations
+n <- 100000
+
+# Simulate two independent uniform random points (X1, Y1) and (X2, Y2)
+x1 <- runif(n)
+x2 <- runif(n)
+y1 <- runif(n)
+y2 <- runif(n)
+
+# Compute squared differences
+x_diff_sq <- (x1 - x2)^2
+y_diff_sq <- (y1 - y2)^2
+
+# Sum of squared differences
+z <- x_diff_sq + y_diff_sq
+
+# Perform convolution
+conv_result <- density(z)
+
+# Plot the density of the convolution result (PDF of the distance squared)
+plot(conv_result, main = "PDF of Sum of Squared Differences", xlab = "Sum of Squared Differences", col = "blue")
+
+# Calculate the distance by taking the square root
+distances <- sqrt(z)
+
+# Plot the histogram of distances to get the PDF of distances
+hist(distances, probability = TRUE, breaks = 50, main = "PDF of Distance Between Two Random Points", 
+     xlab = "Distance", col = "lightgreen")
+
+# Empirical CDF of distances
+plot(ecdf(distances), main = "CDF of Distance Between Two Random Points", 
+     xlab = "Distance", ylab = "Cumulative Probability", col = "red")

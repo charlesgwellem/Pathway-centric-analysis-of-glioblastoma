@@ -1,0 +1,29 @@
+the_names <- colnames(gsva.es_temp)[1:50]
+
+
+g <- gather(gsva.es_temp,
+            key = "Pathway",
+            value = "Activity",
+            the_names[1:10])
+
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+
+# Assuming your dataset is called 'data', and it contains columns:
+# 'CellType' - for cell type (e.g., Zygote, 2 cells, 4 cells, etc.)
+# 'Pseudotime' - for pseudotime values
+# 'CellAbundance' - for cell abundance at each time point
+
+# Create the plot with Cell Abundance affecting point size
+ggplot(g, aes(x = log(pt), y = Pathway)) + 
+  geom_point(aes(size = Activity, color = Pathway), alpha = 0.7) +   # Plot points with size based on abundance
+  scale_y_discrete(limits = rev(levels(factor(g$Pathway)))) +  # Order y-axis (from Zygote to Blastocyst)
+  theme_minimal() + 
+  labs(title = "Cell Type Abundance Over Pseudotime", 
+       x = "Pseudotime", 
+       y = "Time Point",
+       size = "Cell Abundance") +  # Legend title for size
+  theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 14),
+        plot.title = element_text(hjust = 0.5, size = 16)) 
